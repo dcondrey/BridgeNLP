@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bridgenlp"
+version = "0.1.0"
+description = "A lightweight, extensible framework for bridging advanced NLP models with token-based pipelines like spaCy"
+readme = "README.md"
+authors = [
+    {name = "David L Condrey"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities"
+]
+
+dependencies = [
+    "spacy>=3.0",
+    "numpy>=1.18"
+]
+
+[project.optional-dependencies]
+allennlp = ["allennlp>=2.10", "allennlp-models>=2.10"]
+huggingface = ["transformers>=4.25", "torch>=1.10", "sentencepiece"]
+nltk = ["nltk>=3.6"]
+"all" = [
+    "allennlp>=2.10",
+    "allennlp-models>=2.10",
+    "transformers>=4.25",
+    "torch>=1.10",
+    "sentencepiece",
+    "nltk>=3.6"
+]
+"dev" = [
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "black",
+    "isort",
+    "build",
+    "twine"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/dcondrey/bridgenlp"
+"Repository" = "https://github.com/dcondrey/bridgenlp"
+"Bug Tracker" = "https://github.com/dcondrey/bridgenlp/issues"
+"Documentation" = "https://github.com/dcondrey/bridgenlp#readme"
+
+[project.scripts]
+bridgenlp = "bridgenlp.cli:main"
+
+[tool.setuptools]
+packages = ["bridgenlp", "bridgenlp.adapters", "bridgenlp.pipes"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
