@@ -36,9 +36,11 @@ class BridgeResult:
         
         # Only include non-empty fields to reduce size
         if self.spans:
-            result["spans"] = self.spans
+            # Convert tuples to lists for JSON serialization
+            result["spans"] = [list(span) for span in self.spans]
         if self.clusters:
-            result["clusters"] = self.clusters
+            # Convert nested tuples to lists for JSON serialization
+            result["clusters"] = [[list(span) for span in cluster] for cluster in self.clusters]
         if self.roles:
             result["roles"] = self.roles
         if self.labels:
@@ -65,7 +67,13 @@ class BridgeResult:
                     obj[key] = str(value)
         elif isinstance(obj, list):
             for i, item in enumerate(obj):
-                if isinstance(item, (dict, list)):
+                if isinstance(item, tuple):
+                    # Convert tuples to lists for JSON serialization
+                    # but don't warn since this is expected
+                    obj[i] = list(item)
+                    # Check if the tuple contents are serializable
+                    self._ensure_serializable(obj[i])
+                elif isinstance(item, (dict, list)):
                     self._ensure_serializable(item)
                 elif not self._is_json_serializable(item):
                     warnings.warn(f"Converting non-serializable value at index {i} to string")
@@ -81,6 +89,9 @@ class BridgeResult:
         Returns:
             True if the object is JSON serializable, False otherwise
         """
+        # Tuples are serializable as lists in JSON
+        if isinstance(obj, tuple):
+            return all(self._is_json_serializable(item) for item in obj)
         return isinstance(obj, (str, int, float, bool, type(None)))
     
     def attach_to_spacy(self, doc: Doc) -> Doc:
