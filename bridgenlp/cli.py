@@ -154,7 +154,7 @@ def load_bridge(model_type: str, model_name: Optional[str] = None,
         raise ValueError(f"Unknown model type: {model_type}")
 
 
-def process_text(bridge: BridgeBase, text: str) -> Dict:
+def process_text(bridge: BridgeBase, text: str) -> Dict[str, any]:
     """
     Process a single text with the bridge adapter.
     
@@ -173,7 +173,7 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
                   output_stream: TextIO, batch_size: int = 1,
                   parallel: bool = False, max_workers: int = 4,
                   question: Optional[str] = None,
-                  show_progress: bool = False) -> None:
+                  show_progress: bool = False) -> int:
     """
     Process a stream of text with the bridge adapter.
     
@@ -284,6 +284,8 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
                         print(f"  {key}: {value:.4f}", file=sys.stderr)
                     else:
                         print(f"  {key}: {value}", file=sys.stderr)
+                        
+    return processed_count
 
 
 def main():

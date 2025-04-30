@@ -131,6 +131,9 @@ class TokenAligner:
         # For large documents, use a more efficient approach
         if len(doc) > 1000:
             return self._fuzzy_align_large_doc(doc, clean_segment)
+        elif len(doc) > 100:
+            # For medium-sized documents, use a simplified approach
+            return self._fuzzy_align_medium_doc(doc, clean_segment)
         
         # For smaller documents, use the more thorough approach
         segment_tokens = clean_segment.split()
@@ -175,6 +178,70 @@ class TokenAligner:
         
         return best_match
     
+    def _fuzzy_align_medium_doc(self, doc: Doc, text_segment: str) -> Optional[Span]:
+        """
+        Optimized fuzzy alignment for medium-sized documents.
+        
+        Uses a simplified approach that's faster than the full algorithm
+        but more thorough than the large document approach.
+        
+        Args:
+            doc: spaCy Doc to search in
+            text_segment: Text to find in the document
+            
+        Returns:
+            spaCy Span object or None if no good match is found
+        """
+        segment_tokens = text_segment.lower().split()
+        segment_len = len(segment_tokens)
+        
+        if segment_len == 0:
+            return None
+            
+        # Safety check for doc
+        if doc is None or len(doc) == 0:
+            warnings.warn("Cannot align with empty document")
+            return None
+            
+        # Create token sets for faster lookup
+        segment_token_set = set(segment_tokens)
+        
+        # Use a sliding window approach with a fixed step size
+        window_size = min(segment_len * 2, 15)
+        step_size = max(1, window_size // 4)
+        
+        best_match = None
+        best_score = 0
+        
+        # Slide through the document with the window
+        for i in range(0, len(doc), step_size):
+            end_idx = min(i + window_size, len(doc))
+            
+            # Try different spans within this window
+            for j in range(i, end_idx):
+                for k in range(j + 1, min(j + segment_len * 2, end_idx + 1)):
+                    span = doc[j:k]
+                    span_text = span.text.lower()
+                    span_tokens = span_text.split()
+                    
+                    # Skip if length difference is too large
+                    if abs(len(span_tokens) - segment_len) > max(2, segment_len // 2):
+                        continue
+                    
+                    # Calculate similarity score
+                    common = segment_token_set.intersection(span_tokens)
+                    score = len(common) / max(len(span_tokens), segment_len)
+                    
+                    # Early stopping for excellent matches
+                    if score > 0.8:
+                        return span
+                    
+                    if score > best_score and score > 0.5:
+                        best_score = score
+                        best_match = span
+        
+        return best_match
+        
     def _fuzzy_align_large_doc(self, doc: Doc, text_segment: str) -> Optional[Span]:
         """
         Optimized fuzzy alignment for large documents.

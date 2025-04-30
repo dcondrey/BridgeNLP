@@ -142,6 +142,11 @@ class TestStress:
         # Force garbage collection to get a clean baseline
         gc.collect()
         
+        # Track memory usage
+        import psutil
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+        
         try:
             # Process the text multiple times
             for i in range(100):
@@ -156,7 +161,16 @@ class TestStress:
                 if i % 10 == 0:
                     gc.collect()
             
-            # If we got here without memory errors, the test passes
+            # Check memory usage after processing
+            gc.collect()
+            final_memory = process.memory_info().rss / 1024 / 1024  # MB
+            
+            # Allow for some memory growth but not excessive
+            # This is a rough check - memory management is complex
+            assert final_memory < initial_memory * 1.5, f"Memory usage grew too much: {initial_memory:.1f}MB -> {final_memory:.1f}MB"
+        except ImportError:
+            # If psutil is not available, fall back to simpler test
+            print("psutil not available, skipping memory usage check")
             assert True
         finally:
             # Ensure cleanup happens even if test fails

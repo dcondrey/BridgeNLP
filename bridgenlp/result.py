@@ -56,7 +56,13 @@ class BridgeResult:
             
         Returns:
             The same Doc with additional attributes attached
+            
+        Raises:
+            ValueError: If the doc is None
         """
+        if doc is None:
+            raise ValueError("Cannot attach results to None")
+            
         # Register extensions if they don't exist
         if not Doc.has_extension("nlp_bridge_spans"):
             Doc.set_extension("nlp_bridge_spans", default=None)
