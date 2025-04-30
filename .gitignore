@@ -86,3 +86,4 @@ cython_debug/
 .venv
 *.env
 
+.aider*
