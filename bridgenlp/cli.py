@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from typing import Dict, List, Optional, TextIO, Union
+from io import UnsupportedOperation
 from tqdm import tqdm
 
 import spacy
@@ -44,8 +45,8 @@ def load_bridge(model_type: str, model_name: Optional[str] = None,
             model_type=model_type,
             model_name=model_name
         )
-    elif model_name is not None:
-        # Override model_name in config if explicitly provided
+    elif model_name is not None and model_name != config.model_name:
+        # Override model_name in config if explicitly provided and different
         config.model_name = model_name
     if model_type == "coref" or model_type == "spanbert-coref":
         try:
@@ -185,7 +186,7 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
             current_pos = input_stream.tell()
             total_lines = sum(1 for _ in input_stream if _.strip())
             input_stream.seek(current_pos)  # Reset position
-        except (IOError, AttributeError):
+        except (IOError, AttributeError, UnsupportedOperation):
             # If we can't count lines, we'll use an indeterminate progress bar
             pass
     

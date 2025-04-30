@@ -52,9 +52,8 @@ class BridgeBase(ABC):
         Returns:
             BridgeResult containing the processed information
         """
-        with self._measure_performance():
-            # Implement in subclass
-            pass
+        # The context manager should be used in implementations, not in the abstract method
+        pass
     
     @abstractmethod
     def from_tokens(self, tokens: List[str]) -> BridgeResult:
@@ -67,9 +66,8 @@ class BridgeBase(ABC):
         Returns:
             BridgeResult containing the processed information
         """
-        with self._measure_performance():
-            # Implement in subclass
-            pass
+        # The context manager should be used in implementations, not in the abstract method
+        pass
     
     @abstractmethod
     def from_spacy(self, doc: spacy.tokens.Doc) -> spacy.tokens.Doc:
@@ -82,9 +80,8 @@ class BridgeBase(ABC):
         Returns:
             The same Doc with additional attributes attached
         """
-        with self._measure_performance():
-            # Implement in subclass
-            pass
+        # The context manager should be used in implementations, not in the abstract method
+        pass
     
     @contextlib.contextmanager
     def _measure_performance(self):
