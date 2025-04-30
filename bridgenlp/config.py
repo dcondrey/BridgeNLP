@@ -67,13 +67,13 @@ class BridgeConfig:
         config.params = params
         
         # Validate device
-        if isinstance(config.device, str) and config.device not in ["cpu", "cuda"]:
+        if isinstance(config.device, str) and config.device not in ["cpu", "cuda", "-1"]:
             try:
                 # Try to convert string to int for GPU index
                 config.device = int(config.device)
             except ValueError:
                 raise ValueError(f"Invalid device value: {config.device}. "
-                                 f"Must be an integer, 'cpu', or 'cuda'")
+                                 f"Must be an integer, 'cpu', 'cuda', or '-1'")
         
         return config
     

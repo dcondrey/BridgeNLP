@@ -77,8 +77,18 @@ class HuggingFaceEmbeddingsBridge(BridgeBase):
                 self._model = AutoModel.from_pretrained(self.model_name)
                 
                 # Move to specified device
-                if isinstance(self.device, str) and self.device == "cuda" and torch.cuda.is_available():
-                    self._model = self._model.cuda()
+                if isinstance(self.device, str):
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        self._model = self._model.cuda()
+                    elif self.device != "-1" and self.device != "cpu" and torch.cuda.is_available():
+                        # Try to parse as integer for specific GPU
+                        try:
+                            device_idx = int(self.device)
+                            if device_idx >= 0:
+                                self._model = self._model.cuda(device_idx)
+                        except ValueError:
+                            # If not a valid integer, default to CPU
+                            pass
                 elif isinstance(self.device, int) and self.device >= 0 and torch.cuda.is_available():
                     self._model = self._model.cuda(self.device)
                 
@@ -118,8 +128,18 @@ class HuggingFaceEmbeddingsBridge(BridgeBase):
         )
         
         # Move to device
-        if isinstance(self.device, str) and self.device == "cuda" and torch.cuda.is_available():
-            inputs = {k: v.cuda() for k, v in inputs.items()}
+        if isinstance(self.device, str):
+            if self.device == "cuda" and torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+            elif self.device != "-1" and self.device != "cpu" and torch.cuda.is_available():
+                # Try to parse as integer for specific GPU
+                try:
+                    device_idx = int(self.device)
+                    if device_idx >= 0:
+                        inputs = {k: v.cuda(device_idx) for k, v in inputs.items()}
+                except ValueError:
+                    # If not a valid integer, default to CPU
+                    pass
         elif isinstance(self.device, int) and self.device >= 0 and torch.cuda.is_available():
             inputs = {k: v.cuda(self.device) for k, v in inputs.items()}
         

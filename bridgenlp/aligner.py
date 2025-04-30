@@ -6,8 +6,16 @@ import re
 import warnings
 from typing import List, Optional, Tuple
 
-import spacy
-from spacy.tokens import Doc, Span
+try:
+    import spacy
+    from spacy.tokens import Doc, Span
+except ImportError:
+    # Provide a helpful error message but allow the module to be imported
+    warnings.warn("spaCy not installed. Install with: pip install spacy")
+    spacy = None
+    # Create dummy classes for type hints to work
+    class Doc: pass
+    class Span: pass
 
 
 class TokenAligner:

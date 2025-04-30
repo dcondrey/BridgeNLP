@@ -80,7 +80,10 @@ class HuggingFaceSentimentBridge(BridgeBase):
                 
                 # Handle device configuration
                 if isinstance(self.device, str):
-                    pipeline_kwargs["device"] = self.device
+                    if self.device == "-1":
+                        pipeline_kwargs["device"] = "cpu"
+                    else:
+                        pipeline_kwargs["device"] = self.device
                 else:
                     pipeline_kwargs["device"] = self.device if self.device >= 0 else "cpu"
                 
@@ -243,6 +246,10 @@ class HuggingFaceSentimentBridge(BridgeBase):
                         self._pipeline.tokenizer = None
                     
                     self._pipeline = None
+                    
+                    # Force garbage collection
+                    import gc
+                    gc.collect()
             except Exception:
                 # Ensure no exceptions are raised during cleanup
                 pass

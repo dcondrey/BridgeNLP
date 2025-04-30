@@ -118,8 +118,10 @@ class BridgeBase(ABC):
         # Calculate derived metrics
         if metrics["num_calls"] > 0:
             metrics["avg_time"] = metrics["total_time"] / metrics["num_calls"]
-            if metrics["total_tokens"] > 0 and metrics["total_time"] > 0:
+            if metrics["total_tokens"] > 0 and metrics["total_time"] > 0.00001:  # Avoid division by very small numbers
                 metrics["tokens_per_second"] = metrics["total_tokens"] / metrics["total_time"]
+            elif metrics["total_tokens"] > 0:
+                metrics["tokens_per_second"] = float('inf')  # Indicate extremely fast processing
         
         return metrics
     

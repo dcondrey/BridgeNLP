@@ -352,8 +352,8 @@ def main():
         help="Path to JSON configuration file"
     )
     predict_parser.add_argument(
-        "--device", type=str, default="-1",
-        help="Device to use (-1 for CPU, >=0 for specific GPU, or 'cuda'/'cpu')"
+        "--device", type=str, default="cpu",
+        help="Device to use ('cpu' for CPU, number for specific GPU, or 'cuda')"
     )
     predict_parser.add_argument(
         "--collect-metrics", action="store_true",
@@ -415,26 +415,30 @@ def main():
                 
                 elif args.file:
                     # Process file
-                    with open(args.file, "r") as input_file:
-                        if args.output:
-                            with open(args.output, "w") as output_file:
+                    try:
+                        with open(args.file, "r") as input_file:
+                            if args.output:
+                                with open(args.output, "w") as output_file:
+                                    process_stream(
+                                        bridge, input_file, output_file, 
+                                        batch_size=args.batch_size,
+                                        parallel=args.parallel,
+                                        max_workers=args.max_workers,
+                                        question=args.question,
+                                        show_progress=args.progress
+                                    )
+                            else:
                                 process_stream(
-                                    bridge, input_file, output_file, 
+                                    bridge, input_file, sys.stdout,
                                     batch_size=args.batch_size,
                                     parallel=args.parallel,
                                     max_workers=args.max_workers,
                                     question=args.question,
                                     show_progress=args.progress
                                 )
-                        else:
-                            process_stream(
-                                bridge, input_file, sys.stdout,
-                                batch_size=args.batch_size,
-                                parallel=args.parallel,
-                                max_workers=args.max_workers,
-                                question=args.question,
-                                show_progress=args.progress
-                            )
+                    except FileNotFoundError:
+                        print(f"Error: Input file not found: {args.file}", file=sys.stderr)
+                        sys.exit(1)
                 
                 else:
                     # Process stdin to stdout
