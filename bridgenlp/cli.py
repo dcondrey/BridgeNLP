@@ -77,8 +77,31 @@ def load_bridge(model_type: str, model_name: Optional[str] = None,
     elif model_type == "ner" or model_type == "spacy-ner":
         try:
             from .adapters.spacy_ner import SpacyNERBridge
+            
+            # First check if the model is available
+            model_name = config.model_name or "en_core_web_sm"
+            try:
+                # Try to load the model to verify it's installed
+                import spacy
+                spacy.load(model_name)
+            except OSError:
+                # Model not found, suggest downloading it
+                print(f"spaCy model '{model_name}' not found. Attempting to download...", file=sys.stderr)
+                try:
+                    # Try to download the model automatically
+                    import subprocess
+                    subprocess.check_call([sys.executable, "-m", "spacy", "download", model_name])
+                    print(f"Successfully downloaded spaCy model: {model_name}", file=sys.stderr)
+                except subprocess.CalledProcessError:
+                    # If download fails, provide instructions
+                    raise ImportError(
+                        f"Could not automatically download spaCy model '{model_name}'. "
+                        f"Please install it manually with: python -m spacy download {model_name}"
+                    )
+            
+            # Now create the bridge with the verified model
             return SpacyNERBridge(
-                model_name=config.model_name or "en_core_web_sm",
+                model_name=model_name,
                 config=config
             )
         except ImportError as e:
@@ -302,6 +325,13 @@ def main():
         description="BridgeNLP: Universal NLP model integration"
     )
     
+    # Check if spaCy is installed
+    try:
+        import spacy
+    except ImportError:
+        print("Warning: spaCy is not installed. Some features may not work.", file=sys.stderr)
+        print("Install spaCy with: pip install spacy", file=sys.stderr)
+    
     # Main command
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -464,6 +494,19 @@ def main():
         
         except ImportError as e:
             print(f"Error: {e}", file=sys.stderr)
+            
+            # Provide helpful installation instructions based on the model type
+            if args.model in ["coref", "spanbert-coref"]:
+                print("\nTo install AllenNLP dependencies, run:", file=sys.stderr)
+                print("pip install allennlp allennlp-models", file=sys.stderr)
+            elif args.model in ["srl", "sentiment", "classify", "classification", "qa", "question-answering", "embeddings", "embedding"]:
+                print("\nTo install Hugging Face dependencies, run:", file=sys.stderr)
+                print("pip install transformers torch", file=sys.stderr)
+            elif args.model in ["ner", "spacy-ner"]:
+                print("\nTo install spaCy and download models, run:", file=sys.stderr)
+                print(f"pip install spacy", file=sys.stderr)
+                print(f"python -m spacy download {args.model_name or 'en_core_web_sm'}", file=sys.stderr)
+            
             sys.exit(1)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
