@@ -1,0 +1,17 @@
+# Core dependencies
+spacy>=3.0.0
+tqdm>=4.45.0
+
+# Optional dependencies for different adapters
+# Uncomment as needed
+
+# For Hugging Face adapters
+# transformers>=4.0.0
+# torch>=1.7.0
+
+# For AllenNLP adapters
+# allennlp>=2.0.0
+# allennlp-models>=2.0.0
+
+# For NLTK adapter
+# nltk>=3.5
