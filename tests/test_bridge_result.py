@@ -2,6 +2,7 @@
 Tests for the BridgeResult class.
 """
 
+import gc
 import pytest
 import spacy
 from spacy.tokens import Doc
