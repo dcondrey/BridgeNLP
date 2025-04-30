@@ -207,8 +207,9 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
     def read_chunks(stream, chunk_size):
         lines = []
         for line in stream:
-            if line.strip():
-                lines.append(line.strip())
+            line_stripped = line.strip()
+            if line_stripped:
+                lines.append(line_stripped)
                 if len(lines) >= chunk_size:
                     yield lines
                     lines = []

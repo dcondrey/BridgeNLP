@@ -197,6 +197,11 @@ class TokenAligner:
         if segment_len == 0:
             return None
         
+        # Safety check for doc
+        if doc is None or len(doc) == 0:
+            warnings.warn("Cannot align with empty document")
+            return None
+        
         # Create token sets for faster lookup
         segment_token_set = set(segment_tokens)
         

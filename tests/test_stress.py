@@ -140,24 +140,27 @@ class TestStress:
         # Force garbage collection to get a clean baseline
         gc.collect()
         
-        # Process the text multiple times
-        for i in range(100):
-            doc = nlp(text)
-            processed_doc = pipe(doc)
+        try:
+            # Process the text multiple times
+            for i in range(100):
+                doc = nlp(text)
+                processed_doc = pipe(doc)
+                
+                # Explicitly delete to ensure cleanup
+                del processed_doc
+                del doc
+                
+                # Force garbage collection every 10 iterations
+                if i % 10 == 0:
+                    gc.collect()
             
-            # Explicitly delete to ensure cleanup
-            del processed_doc
-            del doc
-            
-            # Force garbage collection every 10 iterations
-            if i % 10 == 0:
-                gc.collect()
-        
-        # Final cleanup
-        gc.collect()
-        
-        # If we got here without memory errors, the test passes
-        assert True
+            # If we got here without memory errors, the test passes
+            assert True
+        finally:
+            # Ensure cleanup happens even if test fails
+            pipe = None
+            bridge = None
+            gc.collect()
     
     def test_batched_inference(self, nlp):
         """Test batched inference with multiple documents."""

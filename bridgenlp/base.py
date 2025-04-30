@@ -104,7 +104,8 @@ class BridgeBase(ABC):
             self._metrics["errors"] += 1
             raise e
         finally:
-            self._metrics["total_time"] += time.time() - start_time
+            elapsed = time.time() - start_time
+            self._metrics["total_time"] += elapsed
     
     def get_metrics(self) -> Dict[str, float]:
         """
