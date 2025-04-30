@@ -158,12 +158,20 @@ class TestBridgeResult:
             # Create many results to amplify any memory issues
             results = []
             for _ in range(100):
+                # Use a shared token list to reduce memory usage
+                shared_tokens = tokens.copy()
+                # Create spans and clusters more efficiently
+                spans = [(i, i+1) for i in range(0, 10000, 100)]
+                clusters = [[(i, i+1), (i+10, i+11)] for i in range(0, 10000, 200)]
+                # Create a single shared label list
+                shared_labels = ["TEST" if i % 100 == 0 else "O" for i in range(10000)]
+                
                 results.append(BridgeResult(
-                    tokens=tokens.copy(),
-                    spans=[(i, i+1) for i in range(0, 10000, 100)],
-                    clusters=[[(i, i+1), (i+10, i+11)] for i in range(0, 10000, 200)],
+                    tokens=shared_tokens,
+                    spans=spans,
+                    clusters=clusters,
                     roles=[{"role": "TEST", "text": "token"} for _ in range(100)],
-                    labels=["TEST" if i % 100 == 0 else "O" for i in range(10000)]
+                    labels=shared_labels
                 ))
             
             # Measure after

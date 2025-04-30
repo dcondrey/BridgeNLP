@@ -3,7 +3,8 @@ Result container for NLP model outputs.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+import warnings
 
 import spacy
 from spacy.tokens import Doc
@@ -43,7 +44,44 @@ class BridgeResult:
         if self.labels:
             result["labels"] = self.labels
             
+        # Ensure all values are JSON serializable
+        self._ensure_serializable(result)
+            
         return result
+        
+    def _ensure_serializable(self, obj: Union[Dict, List, Any]) -> None:
+        """
+        Recursively ensure all values in a dictionary or list are JSON serializable.
+        
+        Args:
+            obj: Dictionary, list, or value to check
+        """
+        if isinstance(obj, dict):
+            for key, value in list(obj.items()):
+                if isinstance(value, (dict, list)):
+                    self._ensure_serializable(value)
+                elif not self._is_json_serializable(value):
+                    warnings.warn(f"Converting non-serializable value for key '{key}' to string")
+                    obj[key] = str(value)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                if isinstance(item, (dict, list)):
+                    self._ensure_serializable(item)
+                elif not self._is_json_serializable(item):
+                    warnings.warn(f"Converting non-serializable value at index {i} to string")
+                    obj[i] = str(item)
+    
+    def _is_json_serializable(self, obj: Any) -> bool:
+        """
+        Check if an object is JSON serializable.
+        
+        Args:
+            obj: Object to check
+            
+        Returns:
+            True if the object is JSON serializable, False otherwise
+        """
+        return isinstance(obj, (str, int, float, bool, type(None)))
     
     def attach_to_spacy(self, doc: Doc) -> Doc:
         """

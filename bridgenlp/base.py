@@ -4,6 +4,7 @@ Base abstract classes for BridgeNLP adapters.
 
 from abc import ABC, abstractmethod
 import contextlib
+import threading
 import time
 from typing import Dict, List, Optional
 
@@ -40,6 +41,7 @@ class BridgeBase(ABC):
             "total_tokens": 0,
             "errors": 0
         }
+        self._metrics_lock = threading.RLock()
     
     @abstractmethod
     def from_text(self, text: str) -> BridgeResult:
@@ -96,16 +98,21 @@ class BridgeBase(ABC):
             return
         
         start_time = time.time()
-        self._metrics["num_calls"] += 1
+        
+        # Thread-safe increment of call count
+        with self._metrics_lock:
+            self._metrics["num_calls"] += 1
         
         try:
             yield
         except Exception as e:
-            self._metrics["errors"] += 1
+            with self._metrics_lock:
+                self._metrics["errors"] += 1
             raise e
         finally:
             elapsed = time.time() - start_time
-            self._metrics["total_time"] += elapsed
+            with self._metrics_lock:
+                self._metrics["total_time"] += elapsed
     
     def get_metrics(self) -> Dict[str, float]:
         """
@@ -114,7 +121,8 @@ class BridgeBase(ABC):
         Returns:
             Dictionary of metrics including average processing time
         """
-        metrics = dict(self._metrics)
+        with self._metrics_lock:
+            metrics = dict(self._metrics)
         
         # Calculate derived metrics
         if metrics["num_calls"] > 0:
@@ -128,12 +136,13 @@ class BridgeBase(ABC):
     
     def reset_metrics(self) -> None:
         """Reset all performance metrics."""
-        self._metrics = {
-            "num_calls": 0,
-            "total_time": 0.0,
-            "total_tokens": 0,
-            "errors": 0
-        }
+        with self._metrics_lock:
+            self._metrics = {
+                "num_calls": 0,
+                "total_time": 0.0,
+                "total_tokens": 0,
+                "errors": 0
+            }
     
     def __enter__(self):
         """Support for context manager protocol."""

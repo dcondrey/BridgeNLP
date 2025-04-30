@@ -177,6 +177,103 @@ class TokenAligner:
             warnings.warn(f"Failed to align text segment: '{text_segment}'")
         
         return best_match
+        
+    def _fuzzy_align_short_segment(self, doc: Doc, segment_tokens: List[str]) -> Optional[Span]:
+        """
+        Optimized alignment for very short segments (1-2 tokens).
+        
+        Args:
+            doc: spaCy Doc to search in
+            segment_tokens: Tokenized text segment to find
+            
+        Returns:
+            spaCy Span object or None if no good match is found
+        """
+        # For single token, do a direct search
+        if len(segment_tokens) == 1:
+            target = segment_tokens[0]
+            for i, token in enumerate(doc):
+                if token.text.lower() == target:
+                    return doc[i:i+1]
+        
+        # For two tokens, look for adjacent matches
+        elif len(segment_tokens) == 2:
+            first, second = segment_tokens
+            for i in range(len(doc) - 1):
+                if (doc[i].text.lower() == first and 
+                    doc[i+1].text.lower() == second):
+                    return doc[i:i+2]
+        
+        return None
+        
+    def _find_promising_regions(self, doc: Doc, segment_tokens: List[str]) -> List[Tuple[int, int]]:
+        """
+        Find promising regions in a large document using a binary search approach.
+        
+        Args:
+            doc: spaCy Doc to search in
+            segment_tokens: Tokenized text segment to find
+            
+        Returns:
+            List of (start, end) indices for promising regions
+        """
+        # Create a set of segment tokens for faster lookup
+        segment_token_set = set(segment_tokens)
+        
+        # Divide document into chunks and check token overlap
+        chunk_size = 1000
+        promising_regions = []
+        
+        for i in range(0, len(doc), chunk_size):
+            end_idx = min(i + chunk_size * 2, len(doc))
+            chunk_tokens = [t.text.lower() for t in doc[i:end_idx]]
+            
+            # Check if there's significant token overlap
+            overlap = segment_token_set.intersection(chunk_tokens)
+            if len(overlap) >= min(2, len(segment_tokens)):
+                promising_regions.append((i, end_idx))
+        
+        return promising_regions
+        
+    def _fuzzy_align_region(self, doc_region: Doc, segment_tokens: List[str]) -> Optional[Span]:
+        """
+        Perform fuzzy alignment within a specific region of the document.
+        
+        Args:
+            doc_region: Region of the spaCy Doc to search in
+            segment_tokens: Tokenized text segment to find
+            
+        Returns:
+            spaCy Span object or None if no good match is found
+        """
+        segment_token_set = set(segment_tokens)
+        segment_len = len(segment_tokens)
+        best_match = None
+        best_score = 0
+        
+        # Try different spans within this region
+        for i in range(len(doc_region)):
+            for j in range(i + 1, min(i + segment_len * 2, len(doc_region) + 1)):
+                span = doc_region[i:j]
+                span_tokens = [t.text.lower() for t in span]
+                
+                # Skip if length difference is too large
+                if abs(len(span_tokens) - segment_len) > max(2, segment_len // 2):
+                    continue
+                
+                # Calculate similarity score
+                common = segment_token_set.intersection(span_tokens)
+                score = len(common) / max(len(span_tokens), segment_len)
+                
+                # Early stopping for excellent matches
+                if score > 0.8:
+                    return span
+                
+                if score > best_score and score > 0.5:
+                    best_score = score
+                    best_match = span
+        
+        return best_match
     
     def _fuzzy_align_medium_doc(self, doc: Doc, text_segment: str) -> Optional[Span]:
         """
@@ -268,6 +365,10 @@ class TokenAligner:
         if doc is None or len(doc) == 0:
             warnings.warn("Cannot align with empty document")
             return None
+            
+        # For very short segments, use a more direct approach
+        if segment_len <= 2:
+            return self._fuzzy_align_short_segment(doc, segment_tokens)
         
         # Create token sets for faster lookup
         segment_token_set = set(segment_tokens)
@@ -348,6 +449,17 @@ class TokenAligner:
         # For very large documents, increase step size further
         if len(doc) > 10000:
             step_size = max(5, step_size)
+            # For extremely large documents, use an even more aggressive approach
+            if len(doc) > 50000:
+                step_size = max(10, step_size)
+                # Use a binary search approach to find promising regions first
+                promising_regions = self._find_promising_regions(doc, segment_tokens)
+                if promising_regions:
+                    for start, end in promising_regions:
+                        region_match = self._fuzzy_align_region(doc[start:end], segment_tokens)
+                        if region_match is not None:
+                            # Adjust the span to be relative to the original doc
+                            return doc[start + region_match.start:start + region_match.end]
         
         # Slide through the document with the window
         for i in range(0, len(doc), step_size):

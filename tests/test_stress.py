@@ -149,20 +149,31 @@ class TestStress:
         
         try:
             # Process the text multiple times
+            docs = []
+            processed_docs = []
+            
             for i in range(100):
+                # Create a new document
                 doc = nlp(text)
-                processed_doc = pipe(doc)
+                docs.append(doc)
                 
-                # Explicitly delete to ensure cleanup
-                del processed_doc
-                del doc
+                # Process the document
+                processed_doc = pipe(doc)
+                processed_docs.append(processed_doc)
                 
                 # Force garbage collection every 10 iterations
                 if i % 10 == 0:
+                    # Clear the lists to release references
+                    docs.clear()
+                    processed_docs.clear()
                     gc.collect()
             
-            # Check memory usage after processing
+            # Final cleanup
+            docs.clear()
+            processed_docs.clear()
             gc.collect()
+            
+            # Check memory usage after processing
             final_memory = process.memory_info().rss / 1024 / 1024  # MB
             
             # Allow for some memory growth but not excessive

@@ -231,7 +231,9 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
             if parallel and batch_size > 1:
                 try:
                     import concurrent.futures
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    # Use ThreadPoolExecutor instead of ProcessPoolExecutor for shared memory models
+                    # This avoids serialization issues with complex models
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                         # Process texts in parallel
                         future_to_text = {executor.submit(process_text, bridge, text): text for text in batch}
                         for future in concurrent.futures.as_completed(future_to_text):
@@ -247,21 +249,27 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
                 except ImportError:
                     # Fall back to sequential processing if concurrent.futures is not available
                     for text in batch:
+                        try:
+                            result = process_text(bridge, text)
+                            output_stream.write(json.dumps(result) + "\n")
+                            output_stream.flush()
+                            processed_count += 1
+                            if pbar:
+                                pbar.update(1)
+                        except Exception as e:
+                            print(f"Error processing text: {e}", file=sys.stderr)
+            else:
+                # Sequential processing
+                for text in batch:
+                    try:
                         result = process_text(bridge, text)
                         output_stream.write(json.dumps(result) + "\n")
                         output_stream.flush()
                         processed_count += 1
                         if pbar:
                             pbar.update(1)
-            else:
-                # Sequential processing
-                for text in batch:
-                    result = process_text(bridge, text)
-                    output_stream.write(json.dumps(result) + "\n")
-                    output_stream.flush()
-                    processed_count += 1
-                    if pbar:
-                        pbar.update(1)
+                    except Exception as e:
+                        print(f"Error processing text: {e}", file=sys.stderr)
     finally:
         if pbar:
             pbar.close()
