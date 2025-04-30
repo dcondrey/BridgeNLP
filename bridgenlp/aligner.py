@@ -207,10 +207,15 @@ class TokenAligner:
         
         # Stage 1: Try to find distinctive tokens that might be unique
         # Focus on longer tokens which are more likely to be distinctive
+        # If no long tokens exist, use whatever tokens we have
         distinctive_tokens = sorted(
             [t for t in segment_tokens if len(t) > 4],
             key=len, reverse=True
         )[:3]  # Take up to 3 longest tokens
+        
+        # If we don't have any long tokens, use all tokens
+        if not distinctive_tokens and segment_tokens:
+            distinctive_tokens = segment_tokens
         
         if distinctive_tokens:
             # Create a quick index of these tokens in the document
@@ -261,7 +266,7 @@ class TokenAligner:
                                 best_match = span
                 
                 # If we found a good match in our focused search, return it
-                if best_match is not None and best_score > 0.6:
+                if best_match is not None and best_score > 0.5:  # Lower threshold for short queries
                     return best_match
         
         # Stage 2: If we didn't find a good match with distinctive tokens,
