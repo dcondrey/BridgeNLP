@@ -129,12 +129,14 @@ def main():
         "The service was okay, nothing special."
     ]
     
-    print("\nProcessing texts:")
-    for text in texts:
-        result = bridge.from_text(text)
-        print(f"Text: {text}")
-        print(f"Result: {json.dumps(result.to_json(), indent=2)}")
-        print()
+    # Use the bridge with a context manager for proper cleanup
+    with bridge:
+        print("\nProcessing texts:")
+        for text in texts:
+            result = bridge.from_text(text)
+            print(f"Text: {text}")
+            print(f"Result: {json.dumps(result.to_json(), indent=2)}")
+            print()
     
     # Print performance metrics
     print("Performance metrics:")

@@ -51,6 +51,9 @@ class BridgeConfig:
             
         Returns:
             BridgeConfig instance
+            
+        Raises:
+            ValueError: If the configuration contains invalid values
         """
         # Extract known fields
         known_fields = {k for k in cls.__dataclass_fields__ if k != "params"}
@@ -62,6 +65,16 @@ class BridgeConfig:
         # Create instance
         config = cls(**base_config)
         config.params = params
+        
+        # Validate device
+        if isinstance(config.device, str) and config.device not in ["cpu", "cuda"]:
+            try:
+                # Try to convert string to int for GPU index
+                config.device = int(config.device)
+            except ValueError:
+                raise ValueError(f"Invalid device value: {config.device}. "
+                                 f"Must be an integer, 'cpu', or 'cuda'")
+        
         return config
     
     @classmethod
@@ -78,10 +91,16 @@ class BridgeConfig:
         Raises:
             FileNotFoundError: If the file doesn't exist
             json.JSONDecodeError: If the file contains invalid JSON
+            ValueError: If the configuration is invalid
         """
-        with open(json_path, "r") as f:
-            config_dict = json.load(f)
-        return cls.from_dict(config_dict)
+        try:
+            with open(json_path, "r") as f:
+                config_dict = json.load(f)
+            return cls.from_dict(config_dict)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Configuration file not found: {json_path}")
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(f"Invalid JSON in configuration file: {json_path}", e.doc, e.pos)
     
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -107,8 +126,10 @@ class BridgeConfig:
         """
         config_dict = self.to_dict()
         
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(os.path.abspath(json_path)), exist_ok=True)
+        # Create directory if it doesn't exist and path contains directories
+        dir_path = os.path.dirname(os.path.abspath(json_path))
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         
         with open(json_path, "w") as f:
             json.dump(config_dict, f, indent=2)

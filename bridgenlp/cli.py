@@ -137,6 +137,19 @@ def load_bridge(model_type: str, model_name: Optional[str] = None,
                 "NLTK not found. Install with: pip install nltk"
             )
     
+    elif model_type == "embeddings" or model_type == "embedding":
+        try:
+            from .adapters.hf_embeddings import HuggingFaceEmbeddingsBridge
+            return HuggingFaceEmbeddingsBridge(
+                model_name=config.model_name or "sentence-transformers/all-MiniLM-L6-v2",
+                config=config
+            )
+        except ImportError:
+            raise ImportError(
+                "Hugging Face dependencies not found. Install with: "
+                "pip install transformers torch numpy"
+            )
+    
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -255,8 +268,9 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
     # Print summary statistics
     elapsed_time = time.time() - start_time
     if processed_count > 0 and show_progress:
-        print(f"Processed {processed_count} texts in {elapsed_time:.2f}s "
-              f"({processed_count / elapsed_time:.2f} texts/sec)", 
+        print(f"Processed {processed_count} texts in {elapsed_time:.4f}s "
+              f"({processed_count / elapsed_time:.2f} texts/sec)" if elapsed_time > 0 else
+              f"Processed {processed_count} texts in {elapsed_time:.4f}s", 
               file=sys.stderr)
         
         # Print metrics if available
@@ -440,8 +454,13 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     
-    else:
+    elif args.command is None:
         parser.print_help()
+        sys.exit(1)
+    else:
+        print(f"Unknown command: {args.command}", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
