@@ -40,6 +40,8 @@ def test_normalize_text_memory():
             result = aligner._normalize_text_uncached(long_text)
             # Immediately delete the result to free memory
             del result
+            # Force garbage collection after each run
+            gc.collect()
             
             end_time = time.time()
             after_mem = process.memory_info().rss / 1024 / 1024
