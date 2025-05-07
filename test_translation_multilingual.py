@@ -1,3 +1,17 @@
+"""Test the multilingual capabilities of the translation adapter."""
+
+import pytest
+import warnings
+from unittest.mock import patch, MagicMock
+
+# Suppress expected warnings about failed alignments in test scenarios
+warnings.filterwarnings("ignore", message="Failed to align text segment")
+
+# Import the adapter directly
+from bridgenlp.adapters.hf_translation import HuggingFaceTranslationBridge
+
+
+def test_alignment_generation():
     """Test alignment information generation in the translation adapter."""
     # Create the translator
     translator = HuggingFaceTranslationBridge(lazy_loading=True)
