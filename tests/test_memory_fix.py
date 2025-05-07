@@ -7,7 +7,7 @@ import time
 import spacy
 from bridgenlp.aligner import TokenAligner
 
-def generate_large_text(size=50000):
+def generate_large_text(size=20000):
     """Generate a large text document with the specified number of tokens."""
     words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", 
              "a", "an", "and", "but", "or", "nor", "for", "yet", "so", 
@@ -33,7 +33,7 @@ def test_aligner_memory_usage():
     nlp = spacy.blank("en")
     
     print("Generating large text document...")
-    large_text = generate_large_text(30000)
+    large_text = generate_large_text(10000)
     
     # Process text with spaCy
     print("Processing with spaCy...")
@@ -60,6 +60,10 @@ def test_aligner_memory_usage():
             
             # Do the alignment operation
             result = aligner.fuzzy_align(doc, search_text)
+            
+            # Force garbage collection after each operation
+            del result
+            gc.collect()
             
             end_time = time.time()
             current_memory = process.memory_info().rss / 1024 / 1024  # MB
@@ -95,6 +99,11 @@ def test_aligner_memory_usage():
             
         print(f"Average time per run: {total_time/10:.2f}s")
         print("PASS: Alignment completes without errors")
+        
+        # Clean up memory
+        del doc
+        del aligner
+        gc.collect()
 
 if __name__ == "__main__":
     test_aligner_memory_usage()

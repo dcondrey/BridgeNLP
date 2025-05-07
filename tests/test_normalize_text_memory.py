@@ -35,8 +35,9 @@ def test_normalize_text_memory():
             # Call the normalized text method via the public API
             start_time = time.time()
             
-            # This will ultimately call _normalize_text
-            aligner.fuzzy_align(aligner._mock_doc("test document"), long_text)
+            # Call _normalize_text_uncached directly to test memory usage
+            # This avoids the warning from fuzzy_align when it can't find a match
+            aligner._normalize_text_uncached(long_text)
             
             end_time = time.time()
             after_mem = process.memory_info().rss / 1024 / 1024
@@ -66,7 +67,7 @@ def test_normalize_text_memory():
             long_text = "a" * length
             
             start_time = time.time()
-            aligner.fuzzy_align(aligner._mock_doc("test document"), long_text)
+            aligner._normalize_text_uncached(long_text)
             end_time = time.time()
             
             print(f"Run {i}: Text length: {length}, Time: {end_time - start_time:.2f}s")
