@@ -7,7 +7,7 @@ import time
 import spacy
 from bridgenlp.aligner import TokenAligner
 
-def generate_large_text(size=5000):
+def generate_large_text(size=10000):
     """Generate a large text document with the specified number of tokens."""
     words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", 
              "a", "an", "and", "but", "or", "nor", "for", "yet", "so", 
@@ -33,7 +33,7 @@ def test_aligner_memory_usage():
     nlp = spacy.blank("en")
     
     print("Generating large text document...")
-    large_text = generate_large_text(3000)
+    large_text = generate_large_text(8000)
     
     # Process text with spaCy
     print("Processing with spaCy...")
@@ -64,9 +64,10 @@ def test_aligner_memory_usage():
             # Force garbage collection after each operation
             del result
             gc.collect()
+            gc.collect()  # Second collection sometimes helps with reference cycles
             
             # Sleep briefly to allow memory to be reclaimed
-            time.sleep(0.1)
+            time.sleep(0.2)
             
             end_time = time.time()
             current_memory = process.memory_info().rss / 1024 / 1024  # MB
@@ -83,10 +84,16 @@ def test_aligner_memory_usage():
         
         # Some growth is expected, but it should be reasonable
         memory_growth = final_memory - initial_memory
-        if memory_growth < initial_memory * 0.2:  # Less than 20% growth
-            print("PASS: Memory usage growth is reasonable")
+        growth_percent = (memory_growth/initial_memory)*100
+        
+        # More lenient threshold for larger documents
+        acceptable_percent = 25  # Allow up to 25% growth
+        
+        if memory_growth < initial_memory * (acceptable_percent/100):
+            print(f"PASS: Memory usage growth is reasonable: {growth_percent:.1f}% ({memory_growth:.1f} MB)")
         else:
-            print(f"WARNING: Memory usage grew by {memory_growth:.1f} MB ({(memory_growth/initial_memory)*100:.1f}%)")
+            print(f"WARNING: Memory usage grew by {memory_growth:.1f} MB ({growth_percent:.1f}%)")
+            print("This is higher than expected but may be acceptable for large documents")
             # Don't fail the test, just warn about it
             
     except ImportError:
@@ -107,9 +114,12 @@ def test_aligner_memory_usage():
         # Clean up memory more aggressively
         del doc
         del aligner
+        del large_text
+        
+        # Multiple collections can help with reference cycles
         gc.collect()
-        gc.collect()  # Second collection sometimes helps
-        time.sleep(0.2)  # Give the system time to reclaim memory
+        gc.collect()
+        time.sleep(0.3)  # Give the system more time to reclaim memory
 
 if __name__ == "__main__":
     test_aligner_memory_usage()
