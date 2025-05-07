@@ -1,523 +1,1769 @@
 """
-Token alignment utilities for mapping between different tokenization schemes.
+Token alignment utilities with improved efficiency, readability, and robust multilingual support.
+
+This module provides tools for aligning tokens between different tokenization schemes,
+with special handling for various script types (Latin, CJK, Arabic, Cyrillic, etc.)
+and improved performance for both small and large documents.
 """
 
 import re
 import warnings
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Set, Union, Callable
+import unicodedata
+from functools import lru_cache
+import string
 
+# Dynamic import approach for spaCy
 try:
     import spacy
-    from spacy.tokens import Doc, Span
+    HAS_SPACY = True
 except ImportError:
-    # Provide a helpful error message but allow the module to be imported
-    warnings.warn("spaCy not installed. Install with: pip install spacy")
+    HAS_SPACY = False
     spacy = None
-    # Create dummy classes for type hints to work
-    class Doc: pass
-    class Span: pass
+
+
+class MockToken:
+    """A lightweight token representation when spaCy is unavailable."""
+    
+    def __init__(self, idx: int, text: str = "", lang: str = "en"):
+        self.idx = idx
+        self.text = text
+        self.lang = lang
+
+    @property
+    def text_with_ws(self) -> str:
+        return self.text
+
+    def __len__(self) -> int:
+        return len(self.text)
+
+
+class MockSpan:
+    """A span representation when spaCy is unavailable."""
+    
+    def __init__(self, doc=None, start: int = 0, end: int = 0, text: str = "", lang: str = "en"):
+        """
+        Initialize a MockSpan.
+        
+        Args:
+            doc: Parent document
+            start: Start token index
+            end: End token index (exclusive)
+            text: Span text
+            lang: Language code
+        """
+        self.doc = doc
+        self.start = start
+        self.end = end
+        self.text = text
+        self.lang = lang
+        self._tokens = None  # Lazy-loaded tokens
+
+    def __len__(self) -> int:
+        return self.end - self.start
+
+    def __iter__(self):
+        return iter(self.tokens)
+        
+    def __getitem__(self, key):
+        """Make span subscriptable to support methods that slice spans."""
+        if isinstance(key, int):
+            if key < 0:
+                key = len(self) + key
+            if key < 0 or key >= len(self):
+                raise IndexError("Span index out of range")
+            # Return the token at the absolute position in the document
+            return self.doc[self.start + key]
+        elif isinstance(key, slice):
+            # Convert relative indices to absolute document positions
+            start = key.start if key.start is not None else 0
+            if start < 0:
+                start = len(self) + start
+            start = max(0, min(len(self), start))
+            
+            stop = key.stop if key.stop is not None else len(self)
+            if stop < 0:
+                stop = len(self) + stop
+            stop = max(0, min(len(self), stop))
+            
+            # Create a new span with the adjusted indices
+            abs_start = self.start + start
+            abs_stop = self.start + stop
+            
+            if self.doc is not None:
+                # If doc is available, get text from document
+                return MockSpan(
+                    self.doc, 
+                    abs_start, 
+                    abs_stop,
+                    text=" ".join(self.doc._tokens[abs_start:abs_stop]), 
+                    lang=self.lang
+                )
+            else:
+                # If no doc, split text
+                tokens = self.text.split()
+                return MockSpan(
+                    None,
+                    start,
+                    stop,
+                    text=" ".join(tokens[start:stop]),
+                    lang=self.lang
+                )
+        else:
+            raise TypeError("Indices must be integers or slices")
+
+    @property
+    def text_with_ws(self) -> str:
+        return self.text
+
+    @property
+    def tokens(self) -> List[MockToken]:
+        if self._tokens is None:
+            if self.doc is None:
+                self._tokens = []
+            else:
+                self._tokens = [
+                    MockToken(i + self.start, self.doc._tokens[i + self.start], lang=self.lang)
+                    for i in range(self.end - self.start)
+                ]
+        return self._tokens
+
+
+class MockDoc:
+    """Document representation when spaCy is unavailable."""
+    
+    def __init__(self, text: str = "", lang: str = "en"):
+        """
+        Initialize a MockDoc.
+        
+        Args:
+            text: Document text
+            lang: Language code
+        """
+        self.text = text
+        self.ents = []
+        self.lang = lang
+        self._tokens = text.split() if text else []
+
+    def __len__(self) -> int:
+        return len(self._tokens)
+
+    def __getitem__(self, key):
+        """Return a MockSpan or MockToken based on the key."""
+        if isinstance(key, int):
+            return MockToken(key, self._tokens[key], lang=self.lang)
+        elif isinstance(key, slice):
+            start = key.start if key.start is not None else 0
+            stop = key.stop if key.stop is not None else len(self._tokens)
+            return MockSpan(
+                self, start, stop, text=" ".join(self._tokens[start:stop]), lang=self.lang
+            )
+        else:
+            raise TypeError("Index must be an integer or slice")
+
+    def __iter__(self):
+        """Return an iterator over the tokens in the document."""
+        return iter([MockToken(i, token, lang=self.lang) for i, token in enumerate(self._tokens)])
+
+
+# Use MockSpan as the return type for all methods
+# This fixes the typing issue with Optional[Span]
 
 
 class TokenAligner:
-    """
-    Utility for aligning tokens between different tokenization schemes.
-    
-    This class provides methods to map character spans and token indices
-    between different tokenization schemes, such as between model-specific
-    tokenizers and spaCy's tokenizer.
-    """
-    
-    def align_char_span(self, doc: Doc, start_char: int, end_char: int) -> Optional[Span]:
+    """Utility for aligning tokens between different tokenization schemes with improved performance."""
+
+    def __init__(self, nlp=None, default_language: str = "en_core_web_sm"):
         """
-        Align a character span to spaCy token boundaries.
+        Initialize the TokenAligner with enhanced multilingual capabilities.
         
         Args:
-            doc: spaCy Doc to align with
-            start_char: Character offset for span start
-            end_char: Character offset for span end
+            nlp: Optional spaCy NLP pipeline
+            default_language: Default spaCy model name (default: 'en_core_web_sm')
+        """
+        self.nlp = nlp
+        self.default_language = default_language
+        self._has_spacy = False
+        self._language_models = {}  # Cache for language models
+        self._script_handlers = {}  # Cache for script-specific handlers
+        
+        # Initialize script-specific handlers
+        self._init_script_handlers()
+        
+        # Initialize spaCy if available
+        if nlp is not None:
+            if HAS_SPACY:
+                self.nlp = nlp
+                self._has_spacy = True
+                self._language_models[default_language] = nlp
+            else:
+                warnings.warn(
+                    "spaCy was provided but could not be imported. Using minimal functionality."
+                )
+        elif HAS_SPACY:  # Try to load default model if spaCy is available
+            try:
+                self.nlp = spacy.load(default_language)
+                self._has_spacy = True
+                self._language_models[default_language] = self.nlp
+            except OSError:
+                # Try to download the model if not available
+                try:
+                    import sys
+                    from spacy.cli import download
+                    print(f"Downloading spaCy model '{default_language}'... (this may take a moment)")
+                    download(default_language)
+                    self.nlp = spacy.load(default_language)
+                    self._has_spacy = True
+                    self._language_models[default_language] = self.nlp
+                    print(f"Successfully downloaded and loaded spaCy model '{default_language}'")
+                except Exception as e:
+                    # If the specific model fails, fall back to a blank model as last resort
+                    try:
+                        lang_code = default_language.split("_")[0]  # Extract language code from model name
+                        print(f"Creating blank spaCy model for language '{lang_code}'")
+                        self.nlp = spacy.blank(lang_code)
+                        self._has_spacy = True
+                        self._language_models[lang_code] = self.nlp
+                        print(f"Successfully created blank spaCy model for '{lang_code}'")
+                    except Exception as e2:
+                        warnings.warn(
+                            f"spaCy is installed, but model '{default_language}' is not available "
+                            f"and automatic download failed: {str(e)}. Blank model creation also failed: {str(e2)}. "
+                            f"Using minimal functionality."
+                        )
+                        
+    def _init_script_handlers(self):
+        """
+        Initialize script-specific handlers for different writing systems.
+        
+        This sets up specialized processing for various script types to improve
+        multilingual token alignment.
+        """
+        # Latin script handler (most European languages)
+        self._script_handlers["latin"] = {
+            "tokenize": self._tokenize_latin,
+            "normalize": self._normalize_latin,
+            "align": self._align_latin,
+            "score": self._score_latin
+        }
+        
+        # CJK script handler (Chinese, Japanese, Korean)
+        self._script_handlers["cjk"] = {
+            "tokenize": self._tokenize_cjk,
+            "normalize": self._normalize_cjk,
+            "align": self._align_cjk,
+            "score": self._score_cjk
+        }
+        
+        # Arabic script handler (Arabic, Persian, Urdu, etc.)
+        self._script_handlers["arabic"] = {
+            "tokenize": self._tokenize_arabic,
+            "normalize": self._normalize_arabic,
+            "align": self._align_arabic,
+            "score": self._score_arabic
+        }
+        
+        # Cyrillic script handler (Russian, Ukrainian, etc.)
+        self._script_handlers["cyrillic"] = {
+            "tokenize": self._tokenize_latin,  # Shares tokenization with Latin
+            "normalize": self._normalize_latin,  # Shares normalization with Latin
+            "align": self._align_latin,  # Shares alignment with Latin
+            "score": self._score_latin  # Shares scoring with Latin
+        }
+        
+        # Default handler for other scripts
+        self._script_handlers["other"] = {
+            "tokenize": self._tokenize_default,
+            "normalize": self._normalize_default,
+            "align": self._align_default,
+            "score": self._score_default
+        }
+
+    def _get_spacy_doc(self, text: str, lang: str = None) -> MockDoc:
+        """
+        Get a spaCy Doc object or MockDoc if spaCy is unavailable.
+        
+        Args:
+            text: Input text
+            lang: Language code, defaults to instance default
+        
+        Returns:
+            A spaCy Doc or MockDoc
+        """
+        lang = lang or self.default_language
+        
+        if not self._has_spacy:
+            return self._mock_doc(text, lang=lang)
+            
+        # Use cached language model or load new one
+        if lang not in self._language_models:
+            try:
+                self._language_models[lang] = spacy.load(f"{lang}_core_web_sm")
+            except OSError:
+                warnings.warn(
+                    f"Could not load spaCy model for language '{lang}'. Using default."
+                )
+                lang = self.default_language
+                
+        return self._language_models[lang](text)
+
+    def _mock_doc(self, text: str, lang: str = None) -> MockDoc:
+        """Create a mock spaCy Doc."""
+        return MockDoc(text, lang=lang or self.default_language)
+
+    def align_char_span(self, doc, start_char: int, end_char: int) -> Optional[MockSpan]:
+        """
+        Align a character span to token boundaries.
+        
+        Args:
+            doc: Document object
+            start_char: Start character index
+            end_char: End character index
             
         Returns:
-            spaCy Span object or None if alignment fails
+            Aligned span or None if alignment fails
         """
-        if doc is None:
-            warnings.warn("Cannot align span: Doc is None")
+        # Validate inputs
+        if doc is None or not doc.text:
+            warnings.warn("Cannot align span: Doc is None or empty")
             return None
-            
+
+        if not isinstance(start_char, int) or not isinstance(end_char, int):
+            warnings.warn(
+                f"Invalid character span: start_char and end_char must be integers. "
+                f"Got start_char={start_char}, end_char={end_char}"
+            )
+            return None
+
         if start_char < 0 or end_char > len(doc.text) or start_char >= end_char:
-            warnings.warn(f"Invalid character span: ({start_char}, {end_char})")
+            warnings.warn(
+                f"Invalid character span: ({start_char}, {end_char}). "
+                f"Doc text length is {len(doc.text)}"
+            )
             return None
-        
-        # Find tokens that contain the start and end characters
-        start_token = None
-        end_token = None
-        
+
+        # Find token boundaries for the character span
+        start_token_index = None
+        end_token_index = None
+
         for i, token in enumerate(doc):
+            token_start = token.idx
+            token_end = token.idx + len(token.text)
+            
             # Find start token
-            if token.idx <= start_char < token.idx + len(token.text) and start_token is None:
-                start_token = i
-            
-            # Find end token (the token that contains the last character)
-            if token.idx <= end_char <= token.idx + len(token.text):
-                # If end_char is at token boundary, we want the previous token
-                if end_char == token.idx and i > 0:
-                    end_token = i - 1
-                else:
-                    end_token = i
+            if start_token_index is None and token_start <= start_char < token_end:
+                start_token_index = i
+                
+            # Find end token
+            if token_start <= end_char <= token_end:
+                end_token_index = i
                 break
-        
-        if start_token is not None and end_token is not None:
-            # Add 1 to end_token to make it exclusive for Span creation
-            return doc[start_token:end_token + 1]
-        
-        warnings.warn(f"Failed to align character span ({start_char}, {end_char})")
+
+        if start_token_index is not None and end_token_index is not None:
+            # Use the correct span class based on whether doc is a spaCy Doc or a MockDoc
+            if HAS_SPACY and isinstance(doc, spacy.tokens.doc.Doc):
+                from spacy.tokens import Span
+                return Span(doc, start_token_index, end_token_index + 1)
+            else:
+                return MockSpan(doc, start_token_index, end_token_index + 1, 
+                               text=doc.text[start_char:end_char])
+
+        warnings.warn(
+            f"Failed to align character span ({start_char}, {end_char}) "
+            f"in document of length {len(doc.text)}"
+        )
         return None
-    
-    def align_token_span(self, doc: Doc, start_idx: int, end_idx: int, 
-                         model_tokens: List[str]) -> Optional[Span]:
+
+    def align_token_span(
+        self, doc, start_idx: int, end_idx: int, model_tokens: List[str], lang: str = None
+    ) -> Optional[MockSpan]:
         """
-        Align a token span from a different tokenization to spaCy tokens.
+        Align a token span from a different tokenization to document tokens.
         
         Args:
-            doc: spaCy Doc to align with
-            start_idx: Start index in model's tokenization
-            end_idx: End index in model's tokenization
-            model_tokens: The tokens from the model's tokenization
+            doc: Document object
+            start_idx: Start token index
+            end_idx: End token index (exclusive)
+            model_tokens: List of tokens from the model
+            lang: Language code
             
         Returns:
-            spaCy Span object or None if alignment fails
+            Aligned span or None if alignment fails
         """
+        # Validate inputs
+        if doc is None or not model_tokens:
+            warnings.warn("Cannot align token span: Doc is None or model_tokens is empty")
+            return None
+
+        if not isinstance(start_idx, int) or not isinstance(end_idx, int):
+            warnings.warn(
+                f"Invalid token span indices: start_idx and end_idx must be integers. "
+                f"Got start_idx={start_idx}, end_idx={end_idx}"
+            )
+            return None
+
         if start_idx < 0 or end_idx > len(model_tokens) or start_idx >= end_idx:
-            warnings.warn(f"Invalid token span: ({start_idx}, {end_idx})")
+            warnings.warn(
+                f"Invalid token span: ({start_idx}, {end_idx}) for model_tokens of length {len(model_tokens)}"
+            )
             return None
-        
-        # Reconstruct the text from model tokens
+
         span_text = " ".join(model_tokens[start_idx:end_idx])
-        
-        # Use fuzzy alignment as a fallback
-        return self.fuzzy_align(doc, span_text)
+        return self.fuzzy_align(doc, span_text, lang=lang)
+
+    # Script-specific tokenization methods
     
-    def fuzzy_align(self, doc: Doc, text_segment: str) -> Optional[Span]:
+    def _tokenize_latin(self, text: str, lang: str = None) -> List[str]:
         """
-        Find the best matching span in a document for a given text segment.
-        
-        This method uses an optimized approach for large documents by:
-        1. First trying exact string matching
-        2. Using a sliding window approach for fuzzy matching
-        3. Limiting the search space based on segment length
+        Tokenize Latin script text (European languages).
         
         Args:
-            doc: spaCy Doc to search in
-            text_segment: Text to find in the document
+            text: Text to tokenize
+            lang: Optional language code
             
         Returns:
-            spaCy Span object or None if no good match is found
+            List of tokens
         """
-        # Clean up the text segment for better matching
-        clean_segment = re.sub(r'\s+', ' ', text_segment).strip()
+        if not text:
+            return []
+            
+        # For Latin scripts, split on whitespace and separate punctuation
+        tokens = []
+        for word in text.split():
+            # Extract words and punctuation as separate tokens
+            word_tokens = re.findall(r'\w+|[^\w\s]', word)
+            tokens.extend([t for t in word_tokens if t.strip()])
+            
+        return tokens
+    
+    def _tokenize_cjk(self, text: str, lang: str = None) -> List[str]:
+        """
+        Tokenize CJK script text (Chinese, Japanese, Korean).
+        
+        Args:
+            text: Text to tokenize
+            lang: Optional language code
+            
+        Returns:
+            List of tokens
+        """
+        if not text:
+            return []
+            
+        # For CJK languages, character-based tokenization is often better for alignment
+        # as each character can be semantically meaningful
+        tokens = []
+        current_token = ""
+        for char in text:
+            # Check if this is a CJK character
+            is_cjk = False
+            try:
+                char_name = unicodedata.name(char).lower()
+                if ('cjk' in char_name or 
+                    'hiragana' in char_name or 
+                    'katakana' in char_name or 
+                    'hangul' in char_name):
+                    is_cjk = True
+            except (ValueError, TypeError):
+                pass
+                
+            if is_cjk:
+                # Add any accumulated non-CJK characters
+                if current_token:
+                    tokens.append(current_token)
+                    current_token = ""
+                # Add CJK character as its own token
+                tokens.append(char)
+            else:
+                # For non-CJK characters, accumulate them
+                current_token += char
+                
+                # If we hit whitespace, end the current token
+                if char.isspace() and current_token.strip():
+                    tokens.append(current_token.strip())
+                    current_token = " "
+                    
+        # Add any remaining characters
+        if current_token and current_token.strip():
+            tokens.append(current_token.strip())
+            
+        return tokens
+    
+    def _tokenize_arabic(self, text: str, lang: str = None) -> List[str]:
+        """
+        Tokenize Arabic script text (Arabic, Persian, etc.).
+        
+        Args:
+            text: Text to tokenize
+            lang: Optional language code
+            
+        Returns:
+            List of tokens
+        """
+        if not text:
+            return []
+            
+        # For Arabic script, use a specialized approach
+        # that preserves the right-to-left nature and special characters
+        
+        # First normalize the text
+        normalized = unicodedata.normalize('NFKD', text)
+        
+        # Then separate by whitespace and extract words/punctuation
+        tokens = []
+        for token in re.findall(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+|\w+|[^\w\s]', normalized):
+            if token.strip():
+                tokens.append(token)
+                
+        return tokens
+    
+    def _tokenize_default(self, text: str, lang: str = None) -> List[str]:
+        """
+        Default tokenization for scripts without specialized handlers.
+        
+        Args:
+            text: Text to tokenize
+            lang: Optional language code
+            
+        Returns:
+            List of tokens
+        """
+        if not text:
+            return []
+            
+        # Default to Latin-style tokenization
+        return self._tokenize_latin(text, lang)
+    
+    # Script-specific normalization methods
+    
+    def _normalize_latin(self, text: str, lang: str = None) -> str:
+        """
+        Normalize Latin script text.
+        
+        Args:
+            text: Text to normalize
+            lang: Optional language code
+            
+        Returns:
+            Normalized text
+        """
+        # Clean whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Convert to lowercase for better matching
+        return text.lower()
+    
+    def _normalize_cjk(self, text: str, lang: str = None) -> str:
+        """
+        Normalize CJK script text.
+        
+        Args:
+            text: Text to normalize
+            lang: Optional language code
+            
+        Returns:
+            Normalized text
+        """
+        # Clean whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # For CJK, use NFKC normalization to handle full/half-width character differences
+        # but preserve case (case is generally not relevant in CJK)
+        return unicodedata.normalize('NFKC', text)
+    
+    def _normalize_arabic(self, text: str, lang: str = None) -> str:
+        """
+        Normalize Arabic script text.
+        
+        Args:
+            text: Text to normalize
+            lang: Optional language code
+            
+        Returns:
+            Normalized text
+        """
+        # Clean whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # For Arabic, use NFKD normalization
+        # Arabic needs specialized handling for vowel marks and ligatures
+        return unicodedata.normalize('NFKD', text)
+    
+    def _normalize_default(self, text: str, lang: str = None) -> str:
+        """
+        Default normalization for scripts without specialized handlers.
+        
+        Args:
+            text: Text to normalize
+            lang: Optional language code
+            
+        Returns:
+            Normalized text
+        """
+        # Clean whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Use NFD normalization to handle diacritics and basic forms
+        return unicodedata.normalize('NFD', text)
+    
+    # Script-specific alignment methods (stub implementations that will be enhanced)
+    
+    def _align_latin(self, doc, text_segment: str, lang: str = None) -> Optional[MockSpan]:
+        """Placeholder for Latin-specific alignment optimizations."""
+        # Currently the default fuzzy alignment is good for Latin scripts
+        return None  # Indicate to use the default alignment approach
+    
+    def _align_cjk(self, doc, text_segment: str, lang: str = None) -> Optional[MockSpan]:
+        """Specialized alignment for CJK texts."""
+        # Special handling for character-based languages
+        # Remove spaces for more flexible matching since CJK doesn't rely on spaces
+        clean_doc_text = re.sub(r'\s+', '', doc.text)
+        clean_search_segment = re.sub(r'\s+', '', text_segment)
+        
+        start_char = clean_doc_text.find(clean_search_segment)
+        if start_char >= 0:
+            # Calculate the correct position in the original text
+            # by counting characters up to the match position
+            orig_pos = 0
+            cjk_pos = 0
+            
+            while cjk_pos < start_char and orig_pos < len(doc.text):
+                if not doc.text[orig_pos].isspace():
+                    cjk_pos += 1
+                orig_pos += 1
+            
+            # Find the end position in the original text
+            end_pos = orig_pos
+            remain_chars = len(clean_search_segment)
+            
+            while remain_chars > 0 and end_pos < len(doc.text):
+                if not doc.text[end_pos].isspace():
+                    remain_chars -= 1
+                end_pos += 1
+            
+            return self.align_char_span(doc, orig_pos, end_pos)
+            
+        return None  # Use default alignment if exact match fails
+    
+    def _align_arabic(self, doc, text_segment: str, lang: str = None) -> Optional[MockSpan]:
+        """Specialized alignment for Arabic/RTL texts."""
+        # Currently use the default alignment with Arabic-specific scoring
+        return None  # Use default alignment
+    
+    def _align_default(self, doc, text_segment: str, lang: str = None) -> Optional[MockSpan]:
+        """Default alignment strategy."""
+        return None  # Use general fuzzy alignment approach
+    
+    # Script-specific scoring methods
+    
+    def _score_latin(self, span, segment_tokens: List[str]) -> float:
+        """
+        Calculate alignment score for Latin script.
+        
+        For Latin scripts, token-based matching with position awareness works well.
+        
+        Args:
+            span: Document span
+            segment_tokens: Tokens to match
+            
+        Returns:
+            Similarity score between 0.0 and 1.0+
+        """
+        # Get span tokens
+        span_tokens = [t.text.lower() for t in span]
+        span_token_count = len(span_tokens)
+        segment_token_count = len(segment_tokens)
+        
+        # For Latin, token overlap is a good indicator
+        if span_token_count < 1 or segment_token_count < 1:
+            return 0.0
+            
+        # Calculate token overlap
+        common_count = 0
+        for token in segment_tokens:
+            if token.lower() in span_tokens:
+                common_count += 1
+                
+        base_score = common_count / max(span_token_count, segment_token_count)
+        
+        # Add position bonus for matching token positions
+        position_bonus = 0.0
+        max_check = min(span_token_count, segment_token_count, 5)  # Check first 5 tokens max
+        
+        for i in range(max_check):
+            if i < span_token_count and i < segment_token_count:
+                if span_tokens[i] == segment_tokens[i].lower():
+                    position_bonus += 0.05
+                    
+        return base_score + position_bonus
+    
+    def _score_cjk(self, span, segment_tokens: List[str]) -> float:
+        """
+        Calculate alignment score for CJK script.
+        
+        For CJK scripts, character-level matching is more important than token positions.
+        
+        Args:
+            span: Document span
+            segment_tokens: Tokens to match
+            
+        Returns:
+            Similarity score between 0.0 and 1.0+
+        """
+        # For CJK, merge tokens into character sequences
+        span_text = ''.join([t.text for t in span])
+        segment_text = ''.join(segment_tokens)
+        
+        if not span_text or not segment_text:
+            return 0.0
+            
+        # Check for substring containment (higher score if one contains the other)
+        if segment_text in span_text:
+            return 0.9 + (len(segment_text) / len(span_text) * 0.1)  # Almost perfect match
+        elif span_text in segment_text:
+            return 0.8  # Good match but not perfect
+            
+        # Calculate character overlap
+        span_chars = set(span_text)
+        segment_chars = set(segment_text)
+        
+        if not span_chars or not segment_chars:
+            return 0.0
+            
+        common_chars = span_chars.intersection(segment_chars)
+        char_overlap = len(common_chars) / max(len(span_chars), len(segment_chars))
+        
+        # Check character sequence overlap (bigrams)
+        span_bigrams = set()
+        segment_bigrams = set()
+        
+        if len(span_text) > 1:
+            span_bigrams = {span_text[i:i+2] for i in range(len(span_text)-1)}
+            
+        if len(segment_text) > 1:
+            segment_bigrams = {segment_text[i:i+2] for i in range(len(segment_text)-1)}
+        
+        bigram_overlap = 0.0
+        if span_bigrams and segment_bigrams:
+            common_bigrams = span_bigrams.intersection(segment_bigrams)
+            bigram_overlap = len(common_bigrams) / max(len(span_bigrams), len(segment_bigrams))
+            
+        # Final score combines character and sequence matching
+        return (char_overlap * 0.3) + (bigram_overlap * 0.7)
+    
+    def _score_arabic(self, span, segment_tokens: List[str]) -> float:
+        """
+        Calculate alignment score for Arabic script.
+        
+        For Arabic scripts, we need to consider the specialized character properties.
+        
+        Args:
+            span: Document span
+            segment_tokens: Tokens to match
+            
+        Returns:
+            Similarity score between 0.0 and 1.0+
+        """
+        # For Arabic, token-based matching is useful but needs to be more lenient
+        span_tokens = [t.text for t in span]
+        span_token_count = len(span_tokens)
+        segment_token_count = len(segment_tokens)
+        
+        if span_token_count < 1 or segment_token_count < 1:
+            return 0.0
+            
+        # Calculate normalized token overlap
+        # Arabic needs normalization to handle different forms of the same character
+        normalized_span = [unicodedata.normalize('NFKD', t) for t in span_tokens]
+        normalized_segment = [unicodedata.normalize('NFKD', t) for t in segment_tokens]
+        
+        common_count = 0
+        for token in normalized_segment:
+            if token in normalized_span:
+                common_count += 1
+                
+        # More lenient scoring for Arabic
+        return common_count / max(span_token_count, segment_token_count)
+    
+    def _score_default(self, span, segment_tokens: List[str]) -> float:
+        """
+        Default scoring method for scripts without specialized handlers.
+        
+        Args:
+            span: Document span
+            segment_tokens: Tokens to match
+            
+        Returns:
+            Similarity score between 0.0 and 1.0+
+        """
+        # Default to Latin scoring
+        return self._score_latin(span, segment_tokens)
+    
+    def _detect_script_type(self, text: str) -> str:
+        """
+        Detect the dominant script type in a text.
+        
+        This helps determine the appropriate normalization and alignment strategy.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Script type: 'latin', 'cjk', 'arabic', 'cyrillic', 'other'
+        """
+        if not text:
+            return 'latin'
+            
+        # Create counters for different script types
+        script_counts = {
+            'latin': 0,
+            'cjk': 0,
+            'arabic': 0,
+            'cyrillic': 0,
+            'other': 0
+        }
+        
+        # Check a sample of the text (up to 100 characters)
+        sample = text[:min(100, len(text))]
+        for char in sample:
+            if char in string.whitespace or char in string.punctuation:
+                continue
+                
+            # Get character name which includes script information
+            try:
+                name = unicodedata.name(char).lower()
+                category = unicodedata.category(char)
+                
+                # Detect script type based on character properties
+                if 'latin' in name or 'ascii' in name:
+                    script_counts['latin'] += 1
+                elif 'cjk' in name or 'hiragana' in name or 'katakana' in name or 'hangul' in name or 'ideograph' in name:
+                    script_counts['cjk'] += 1
+                elif 'arabic' in name or 'hebrew' in name:
+                    script_counts['arabic'] += 1
+                elif 'cyrillic' in name:
+                    script_counts['cyrillic'] += 1
+                elif category.startswith('L'):  # Letter category
+                    script_counts['other'] += 1
+            except (ValueError, TypeError):
+                # If we can't get the name, count as other
+                script_counts['other'] += 1
+                
+        # Return the dominant script type
+        dominant_script = max(script_counts.items(), key=lambda x: x[1])[0]
+        return dominant_script
+        
+    @lru_cache(maxsize=1024)
+    def _normalize_text(self, text: str, lang: str = None) -> str:
+        """
+        Normalize text while preserving important features of different scripts.
+        
+        Args:
+            text: Input text
+            lang: Language code (optional) - helps with script-specific normalization
+            
+        Returns:
+            Normalized text
+        """
+        # For very long inputs, don't use cache to avoid memory leaks
+        if len(text) > 1000:
+            return self._normalize_text_uncached(text, lang)
+            
+        # Clean whitespace first
+        text = re.sub(r'\s+', ' ', text).strip()
+        if not text:
+            return ""
+            
+        # Detect script type to use appropriate normalization
+        script_type = self._detect_script_type(text)
+        
+        # Use the appropriate script-specific handler
+        if script_type in self._script_handlers:
+            return self._script_handlers[script_type]["normalize"](text, lang)
+        else:
+            # Fall back to default handler
+            return self._script_handlers["other"]["normalize"](text, lang)
+        
+    def _normalize_text_uncached(self, text: str, lang: str = None) -> str:
+        """
+        Uncached version of _normalize_text for large inputs.
+        
+        Args:
+            text: Input text
+            lang: Language code (optional)
+            
+        Returns:
+            Normalized text
+        """
+        # Clean whitespace first
+        text = re.sub(r'\s+', ' ', text).strip()
+        if not text:
+            return ""
+            
+        # Detect script type to use appropriate normalization
+        script_type = self._detect_script_type(text)
+        
+        # Use the appropriate script-specific handler
+        if script_type in self._script_handlers:
+            return self._script_handlers[script_type]["normalize"](text, lang)
+        else:
+            # Fall back to default handler
+            return self._script_handlers["other"]["normalize"](text, lang)
+
+    def _tokenize_by_script(self, text: str, script_type: str) -> List[str]:
+        """
+        Tokenize text based on script type and language.
+        
+        Args:
+            text: Input text
+            script_type: Detected script type
+            
+        Returns:
+            List of tokens
+        """
+        if not text:
+            return []
+            
+        if script_type == 'cjk':
+            # For CJK languages, character-based tokenization is often more effective
+            # Preserve character sequences for alignment
+            tokens = []
+            current_token = ""
+            for char in text:
+                # Group consecutive non-CJK characters (spaces, punctuation, latin)
+                if unicodedata.category(char).startswith(('Z', 'P')) or 'LATIN' in unicodedata.name(char, '').upper():
+                    if current_token:
+                        tokens.append(current_token)
+                        current_token = ""
+                    if not char.isspace():
+                        tokens.append(char)
+                else:
+                    # For CJK characters, token = individual character
+                    if current_token:
+                        tokens.append(current_token)
+                        current_token = ""
+                    tokens.append(char)
+                    
+            if current_token:
+                tokens.append(current_token)
+                
+            return tokens
+        elif script_type == 'arabic':
+            # For Arabic and similar scripts, use special tokenization
+            # For now, use a whitespace+punctuation approach
+            tokens = []
+            for token in re.findall(r'\w+|[^\w\s]', text):
+                if token.strip():
+                    tokens.append(token)
+            return tokens
+        else:
+            # For Latin and other scripts, default to space-based tokenization + punctuation
+            return [token for token in re.findall(r'\w+|[^\w\s]', text) if token.strip()]
+    
+    def fuzzy_align(self, doc, text_segment: str, lang: str = None, script_type: str = None) -> Optional[MockSpan]:
+        """
+        Find the best matching span in a document for a given text segment with robust multilingual support.
+        
+        This enhanced method uses script-specific strategies to handle different writing systems
+        appropriately, resulting in more accurate alignment for languages with different
+        tokenization requirements.
+        
+        Args:
+            doc: Document object
+            text_segment: Text to align
+            lang: Language code
+            script_type: Optional explicit script type (if known). Otherwise detected automatically.
+            
+        Returns:
+            Best matching span or None if no match found
+        """
+        # Validate inputs
+        if doc is None or not text_segment:
+            warnings.warn("Cannot align span: Doc is None or text_segment is empty")
+            return None
+
+        # Clean and normalize text
+        clean_segment = re.sub(r"\s+", " ", text_segment).strip()
         if not clean_segment:
-            warnings.warn("Empty text segment for alignment")
+            warnings.warn("Empty text segment for alignment after cleaning")
             return None
         
-        # Simple case: exact match
-        doc_text = doc.text.lower()
-        segment_lower = clean_segment.lower()
+        # Auto-detect script type if not provided
+        if not script_type:
+            script_type = self._detect_script_type(clean_segment)
         
-        # Try exact match first
-        start_char = doc_text.find(segment_lower)
-        if start_char >= 0:
-            end_char = start_char + len(segment_lower)
-            return self.align_char_span(doc, start_char, end_char)
+        # Get spaCy doc with correct language
+        doc = self._get_spacy_doc(doc.text, lang)
         
-        # For large documents, use a more efficient approach
-        if len(doc) > 1000:
-            return self._fuzzy_align_large_doc(doc, clean_segment)
-        elif len(doc) > 100:
-            # For medium-sized documents, use a simplified approach
-            return self._fuzzy_align_medium_doc(doc, clean_segment)
+        # Try script-specific alignment first
+        if script_type in self._script_handlers:
+            # Use script-specific alignment strategy if it returns a result
+            special_result = self._script_handlers[script_type]["align"](doc, clean_segment, lang)
+            if special_result is not None:
+                return special_result
         
-        # For smaller documents, use the more thorough approach
-        segment_tokens = clean_segment.split()
+        # Normalize the text segment based on script type
+        if script_type in self._script_handlers:
+            clean_segment = self._script_handlers[script_type]["normalize"](clean_segment, lang)
+        else:
+            clean_segment = self._script_handlers["other"]["normalize"](clean_segment, lang)
+        
+        # Try exact match first for efficiency
+        doc_text = doc.text
+        
+        # For CJK text, prioritize character-by-character matching
+        # since whitespace doesn't necessarily indicate word boundaries
+        if script_type == 'cjk':
+            # Remove all spaces for CJK exact matching since they may not be significant
+            clean_doc_text = re.sub(r'\s+', '', doc_text)
+            clean_search_segment = re.sub(r'\s+', '', clean_segment)
+            
+            start_char = clean_doc_text.find(clean_search_segment)
+            if start_char >= 0:
+                # Calculate the correct position in the original text
+                # by counting characters up to the match position
+                orig_pos = 0
+                cjk_pos = 0
+                
+                while cjk_pos < start_char and orig_pos < len(doc_text):
+                    if not doc_text[orig_pos].isspace():
+                        cjk_pos += 1
+                    orig_pos += 1
+                
+                # Find the end position in the original text
+                end_pos = orig_pos
+                remain_chars = len(clean_search_segment)
+                
+                while remain_chars > 0 and end_pos < len(doc_text):
+                    if not doc_text[end_pos].isspace():
+                        remain_chars -= 1
+                    end_pos += 1
+                
+                return self.align_char_span(doc, orig_pos, end_pos)
+        elif script_type == 'arabic':
+            # For Arabic, we need to normalize both text and segment for matching
+            norm_doc_text = unicodedata.normalize('NFKD', doc_text)
+            norm_segment = unicodedata.normalize('NFKD', clean_segment)
+            
+            start_char = norm_doc_text.find(norm_segment)
+            if start_char >= 0:
+                end_char = start_char + len(norm_segment)
+                # Find corresponding positions in the original text
+                return self.align_char_span(doc, start_char, end_char)
+        else:
+            # Standard exact match for other scripts
+            start_char = doc_text.lower().find(clean_segment.lower())
+            if start_char >= 0:
+                end_char = start_char + len(clean_segment)
+                return self.align_char_span(doc, start_char, end_char)
+
+        # Get tokens using script-specific tokenization
+        if script_type in self._script_handlers:
+            segment_tokens = self._script_handlers[script_type]["tokenize"](clean_segment, lang)
+        else:
+            segment_tokens = self._script_handlers["other"]["tokenize"](clean_segment, lang)
+            
+        # Choose alignment strategy based on document size
+        doc_len = len(doc)
+        
+        # Use script-aware alignment strategies
+        if doc_len > 1000:
+            return self._fuzzy_align_large_doc(doc, clean_segment, lang=lang, 
+                                           script_type=script_type, segment_tokens=segment_tokens)
+        elif doc_len > 100:
+            return self._fuzzy_align_medium_doc(doc, clean_segment, lang=lang, 
+                                            script_type=script_type, segment_tokens=segment_tokens)
+        else:
+            return self._fuzzy_align_small_doc(doc, clean_segment, lang=lang, 
+                                           script_type=script_type, segment_tokens=segment_tokens)
+
+    def _calculate_similarity_score(self, span, segment_tokens: List[str], 
+                                  script_type: str = 'latin') -> float:
+        """
+        Calculate similarity score between a span and token list with script awareness.
+        Memory-optimized version to avoid leaks with large documents.
+        
+        Args:
+            span: Document span
+            segment_tokens: List of tokens to match
+            script_type: The dominant script type of the text
+            
+        Returns:
+            Similarity score between 0.0 and 1.0+
+        """
+        assert span is not None
+        assert segment_tokens is not None
+
+        # Use the script-specific scoring function if available
+        if script_type in self._script_handlers:
+            return self._script_handlers[script_type]["score"](span, segment_tokens)
+        else:
+            # Fall back to default handler
+            return self._script_handlers["other"]["score"](span, segment_tokens)
+
+    def _fuzzy_align_small_doc(self, doc, text_segment: str, lang: str = None, 
+                            script_type: str = 'latin') -> Optional[MockSpan]:
+        """
+        Perform fuzzy alignment for small documents with script awareness.
+        
+        Args:
+            doc: Document object
+            text_segment: Text to align
+            lang: Language code
+            script_type: The dominant script type of the text
+            
+        Returns:
+            Best matching span or None if no match found
+        """
+        # Use script-aware tokenization
+        if script_type == 'cjk':
+            segment_tokens = self._tokenize_by_script(text_segment, script_type)
+        else:
+            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment) if t.strip()]
+            
+        if not segment_tokens:
+            return None
+            
         best_match = None
         best_score = 0
         
-        # Limit the search space based on segment length
-        max_window_size = min(len(segment_tokens) * 3, len(doc))
-        
+        # Adjust window size based on script type
+        if script_type == 'cjk':
+            # For CJK, use a wider window since character tokenization creates more tokens
+            max_window_size = min(len(segment_tokens) * 5, len(doc))
+        else:
+            # For other scripts, use the standard window size
+            max_window_size = min(len(segment_tokens) * 3, len(doc))
+
         for i in range(len(doc)):
             for j in range(i + 1, min(i + max_window_size, len(doc) + 1)):
                 span = doc[i:j]
-                span_text = span.text.lower()
+                score = self._calculate_similarity_score(span, segment_tokens, script_type=script_type)
+
+                # Adjust threshold based on script type
+                threshold = 0.4 if script_type == 'cjk' else 0.5
+                early_return_threshold = 0.7 if script_type == 'cjk' else 0.8
                 
-                # Calculate similarity score (token overlap with position weighting)
-                span_tokens = span_text.split()
-                
-                # Skip if length difference is too large
-                if abs(len(span_tokens) - len(segment_tokens)) > max(2, len(segment_tokens) // 2):
-                    continue
-                
-                # Calculate token overlap with position weighting
-                common = set(span_tokens).intersection(segment_tokens)
-                
-                # Base score on token overlap
-                score = len(common) / max(len(span_tokens), len(segment_tokens))
-                
-                # Bonus for position-preserving matches
-                position_bonus = 0
-                for pos, token in enumerate(segment_tokens):
-                    if pos < len(span_tokens) and span_tokens[pos].lower() == token.lower():
-                        position_bonus += 0.1
-                
-                score += position_bonus
-                
-                if score > best_score and score > 0.5:  # Threshold for acceptable match
+                if score > best_score and score > threshold:
                     best_score = score
                     best_match = span
-        
-        if best_match is None:
-            warnings.warn(f"Failed to align text segment: '{text_segment}'")
-        
+                    
+                    # Early return for high-confidence matches
+                    if score > early_return_threshold:
+                        return best_match
+                        
+        if best_match is None and text_segment.strip():
+            warnings.warn(f"Failed to align text segment: '{text_segment[:50]}...' (script: {script_type})")
+            
         return best_match
-        
-    def _fuzzy_align_short_segment(self, doc: Doc, segment_tokens: List[str]) -> Optional[Span]:
+
+    def _fuzzy_align_short_segment(self, doc, segment_tokens: List[str], lang: str = None,
+                               script_type: str = 'latin') -> Optional[MockSpan]:
         """
-        Optimized alignment for very short segments (1-2 tokens).
+        Optimize alignment for very short segments (1-2 tokens) with script awareness.
         
         Args:
-            doc: spaCy Doc to search in
-            segment_tokens: Tokenized text segment to find
+            doc: Document object
+            segment_tokens: Tokens to align
+            lang: Language code
+            script_type: The dominant script type of the text
             
         Returns:
-            spaCy Span object or None if no good match is found
+            Matching span or None if no match found
         """
-        # For single token, do a direct search
-        if len(segment_tokens) == 1:
-            target = segment_tokens[0]
-            for i, token in enumerate(doc):
-                if token.text.lower() == target:
-                    return doc[i:i+1]
-        
-        # For two tokens, look for adjacent matches
-        elif len(segment_tokens) == 2:
-            first, second = segment_tokens
-            for i in range(len(doc) - 1):
-                if (doc[i].text.lower() == first and 
-                    doc[i+1].text.lower() == second):
-                    return doc[i:i+2]
-        
+        if not segment_tokens:
+            return None
+            
+        # Different strategies based on script type
+        if script_type == 'cjk':
+            # For CJK languages with character-based tokenization, 
+            # short segments need special handling
+            
+            # Join all tokens (typically individual characters in CJK)
+            search_text = ''.join(segment_tokens)
+            if not search_text:
+                return None
+                
+            # Find exact substring match in the document text
+            doc_text = doc.text
+            
+            # Remove spaces for more flexible matching in CJK
+            search_text_no_space = search_text.replace(' ', '')
+            doc_text_no_space = doc_text.replace(' ', '')
+            
+            idx = doc_text_no_space.find(search_text_no_space)
+            if idx >= 0:
+                # Now find the corresponding position in the original text
+                orig_pos = 0
+                no_space_pos = 0
+                
+                # Map position in no-space text to position in original text
+                while no_space_pos < idx and orig_pos < len(doc_text):
+                    if not doc_text[orig_pos].isspace():
+                        no_space_pos += 1
+                    orig_pos += 1
+                
+                # Find end position
+                end_pos = orig_pos
+                remain_chars = len(search_text_no_space)
+                
+                while remain_chars > 0 and end_pos < len(doc_text):
+                    if not doc_text[end_pos].isspace():
+                        remain_chars -= 1
+                    end_pos += 1
+                
+                # Align the character span
+                return self.align_char_span(doc, orig_pos, end_pos)
+        else:
+            # Standard approach for non-CJK languages
+            # For single token, find exact match with case normalization
+            if len(segment_tokens) == 1:
+                target = segment_tokens[0].lower()
+                for i, token in enumerate(doc):
+                    if token.text.lower() == target:
+                        return doc[i:i+1]
+
+            # For two tokens, find exact sequence with case normalization
+            elif len(segment_tokens) == 2:
+                first, second = [t.lower() for t in segment_tokens]
+                for i in range(len(doc) - 1):
+                    if (doc[i].text.lower() == first and 
+                        doc[i+1].text.lower() == second):
+                        return doc[i:i+2]
+
         return None
-        
-    def _find_promising_regions(self, doc: Doc, segment_tokens: List[str]) -> List[Tuple[int, int]]:
+
+    def _find_promising_regions(self, doc, segment_tokens: List[str], lang: str = None,
+                             script_type: str = 'latin') -> List[Tuple[int, int]]:
         """
-        Find promising regions in a large document using a binary search approach.
+        Find promising regions in a large document using token overlap,
+        with script-specific optimizations.
         
         Args:
-            doc: spaCy Doc to search in
-            segment_tokens: Tokenized text segment to find
+            doc: Document object
+            segment_tokens: Tokens to align
+            lang: Language code
+            script_type: The dominant script type of the text
             
         Returns:
-            List of (start, end) indices for promising regions
+            List of (start, end) index tuples for promising regions
         """
-        # Create a set of segment tokens for faster lookup
-        segment_token_set = set(segment_tokens)
-        
-        # Divide document into chunks and check token overlap
-        chunk_size = 1000
-        promising_regions = []
-        
-        for i in range(0, len(doc), chunk_size):
-            end_idx = min(i + chunk_size * 2, len(doc))
-            chunk_tokens = [t.text.lower() for t in doc[i:end_idx]]
+        if not segment_tokens:
+            return []
             
-            # Check if there's significant token overlap
-            overlap = segment_token_set.intersection(chunk_tokens)
-            if len(overlap) >= min(2, len(segment_tokens)):
-                promising_regions.append((i, end_idx))
-        
-        return promising_regions
-        
-    def _fuzzy_align_region(self, doc_region: Doc, segment_tokens: List[str]) -> Optional[Span]:
+        # Different strategies for different script types
+        if script_type == 'cjk':
+            # For CJK, character-based matching is more reliable
+            # Find regions containing distinctive character sequences
+            
+            # For CJK, use character n-grams as distinctive features
+            if len(segment_tokens) > 3:
+                # Create character bigrams and trigrams from the segment
+                segment_text = ''.join(segment_tokens)
+                bigrams = {segment_text[i:i+2] for i in range(len(segment_text)-1)}
+                # Add trigrams if the segment is long enough
+                trigrams = set()
+                if len(segment_text) > 2:
+                    trigrams = {segment_text[i:i+3] for i in range(len(segment_text)-2)}
+                
+                # Use the most distinctive n-grams (less common in general)
+                distinctive_features = list(trigrams) + list(bigrams)
+                distinctive_features = distinctive_features[:5]  # Limit to 5 features
+            else:
+                # For very short segments, use the full segment
+                distinctive_features = [''.join(segment_tokens)]
+            
+            doc_len = len(doc)
+            chunk_size = min(500, max(50, doc_len // 100))  # Smaller chunks for CJK
+            promising_regions = []
+            
+            # Get the document text once
+            doc_text = doc.text
+            
+            for i in range(0, doc_len, chunk_size):
+                end_idx = min(i + chunk_size * 2, doc_len)
+                
+                # Get text span directly instead of collecting tokens
+                if i < len(doc) and end_idx <= len(doc):
+                    chunk_text = doc_text[doc[i].idx:doc[min(end_idx-1, len(doc)-1)].idx + len(doc[min(end_idx-1, len(doc)-1)].text)]
+                    
+                    # Check if any distinctive feature appears in this chunk
+                    for feature in distinctive_features:
+                        if feature in chunk_text:
+                            promising_regions.append((i, end_idx))
+                            break
+            
+            return promising_regions
+        else:
+            # Extract only the most distinctive tokens to reduce memory usage
+            # and improve relevance of matches for non-CJK scripts
+            if len(segment_tokens) > 5:
+                # Sort tokens by length in descending order (longer = more distinctive)
+                sorted_tokens = sorted([t for t in segment_tokens if len(t) > 3], 
+                                      key=len, reverse=True)
+                # Use up to 5 most distinctive tokens
+                segment_token_set = {t.lower() for t in sorted_tokens[:5]}
+                
+                # Always include at least 2 tokens, even if they're short
+                if len(segment_token_set) < 2 and len(segment_tokens) >= 2:
+                    segment_token_set = {segment_tokens[0].lower(), segment_tokens[-1].lower()}
+            else:
+                segment_token_set = {t.lower() for t in segment_tokens}
+            
+            doc_len = len(doc)
+            # Adjust chunk size based on document length to avoid excessive memory usage
+            chunk_size = min(1000, max(100, doc_len // 50))
+            promising_regions = []
+
+            for i in range(0, doc_len, chunk_size):
+                end_idx = min(i + chunk_size * 2, doc_len)
+                
+                # Collect chunk tokens without creating a full span object
+                chunk_tokens = set()
+                for j in range(i, end_idx):
+                    if j < doc_len:
+                        chunk_tokens.add(doc[j].text.lower())
+                    
+                    # Limit size of chunk_tokens to avoid memory bloat
+                    if len(chunk_tokens) > 1000:
+                        break
+                
+                # Consider regions with sufficient token overlap
+                overlap = segment_token_set.intersection(chunk_tokens)
+                
+                # For languages with rich morphology (like Arabic), be more lenient
+                min_overlap = 1 if script_type == 'arabic' else min(2, len(segment_tokens))
+                
+                if len(overlap) >= min_overlap:
+                    promising_regions.append((i, end_idx))
+                    
+            return promising_regions
+
+    def _fuzzy_align_region(self, doc_region, segment_tokens: List[str], lang: str = None,
+                           script_type: str = 'latin') -> Optional[MockSpan]:
         """
-        Perform fuzzy alignment within a specific region of the document.
+        Perform fuzzy alignment within a specific region of the document,
+        with script-specific optimizations.
         
         Args:
-            doc_region: Region of the spaCy Doc to search in
-            segment_tokens: Tokenized text segment to find
+            doc_region: Document region
+            segment_tokens: Tokens to align
+            lang: Language code
+            script_type: The dominant script type of the text
             
         Returns:
-            spaCy Span object or None if no good match is found
+            Best matching span or None if no match found
         """
-        segment_token_set = set(segment_tokens)
         segment_len = len(segment_tokens)
-        best_match = None
-        best_score = 0
-        
-        # Try different spans within this region
-        for i in range(len(doc_region)):
-            for j in range(i + 1, min(i + segment_len * 2, len(doc_region) + 1)):
-                span = doc_region[i:j]
-                span_tokens = [t.text.lower() for t in span]
-                
-                # Skip if length difference is too large
-                if abs(len(span_tokens) - segment_len) > max(2, segment_len // 2):
-                    continue
-                
-                # Calculate similarity score
-                common = segment_token_set.intersection(span_tokens)
-                score = len(common) / max(len(span_tokens), segment_len)
-                
-                # Early stopping for excellent matches
-                if score > 0.8:
-                    return span
-                
-                if score > best_score and score > 0.5:
-                    best_score = score
-                    best_match = span
-        
-        return best_match
-    
-    def _fuzzy_align_medium_doc(self, doc: Doc, text_segment: str) -> Optional[Span]:
-        """
-        Optimized fuzzy alignment for medium-sized documents.
-        
-        Uses a simplified approach that's faster than the full algorithm
-        but more thorough than the large document approach.
-        
-        Args:
-            doc: spaCy Doc to search in
-            text_segment: Text to find in the document
-            
-        Returns:
-            spaCy Span object or None if no good match is found
-        """
-        segment_tokens = text_segment.lower().split()
-        segment_len = len(segment_tokens)
-        
         if segment_len == 0:
             return None
             
-        # Safety check for doc
-        if doc is None or len(doc) == 0:
-            warnings.warn("Cannot align with empty document")
-            return None
-            
-        # Create token sets for faster lookup
-        segment_token_set = set(segment_tokens)
-        
-        # Use a sliding window approach with a fixed step size
-        window_size = min(segment_len * 2, 15)
-        step_size = max(1, window_size // 4)
-        
         best_match = None
         best_score = 0
+
+        # Adjust length constraints based on script type
+        if script_type == 'cjk':
+            # For CJK, we need more flexibility in length comparison
+            # since character tokenization creates more tokens
+            min_len = max(1, segment_len // 3)
+            max_len = segment_len * 3
+            threshold = 0.4  # Lower threshold for CJK
+            high_confidence = 0.7  # Lower high confidence threshold for CJK
+        else:
+            # Standard constraints for other scripts
+            min_len = max(1, segment_len - max(2, segment_len // 2))
+            max_len = segment_len + max(2, segment_len // 2)
+            threshold = 0.5
+            high_confidence = 0.8
+
+        for i in range(len(doc_region)):
+            # Only check spans of reasonable length
+            for j in range(i + 1, min(i + max_len, len(doc_region) + 1)):
+                # Skip spans that are too different in length
+                if j - i < min_len:
+                    continue
+                    
+                span = doc_region[i:j]
+                score = self._calculate_similarity_score(span, segment_tokens, script_type=script_type)
+                
+                # Early return for high-confidence matches
+                if score > high_confidence:
+                    return span
+                    
+                if score > best_score and score > threshold:
+                    best_score = score
+                    best_match = span
+                    
+        return best_match
+
+    def _fuzzy_align_medium_doc(self, doc, text_segment: str, lang: str = None,
+                             script_type: str = 'latin') -> Optional[MockSpan]:
+        """
+        Optimized fuzzy alignment for medium-sized documents with script awareness.
         
-        # Slide through the document with the window
-        for i in range(0, len(doc), step_size):
-            end_idx = min(i + window_size, len(doc))
+        Args:
+            doc: Document object
+            text_segment: Text to align
+            lang: Language code
+            script_type: The dominant script type of the text
             
-            # Try different spans within this window
+        Returns:
+            Best matching span or None if no match found
+        """
+        # Use script-aware tokenization
+        if script_type == 'cjk':
+            segment_tokens = self._tokenize_by_script(text_segment, script_type)
+        else:
+            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
+            
+        segment_len = len(segment_tokens)
+        doc_len = len(doc)
+
+        if segment_len == 0:
+            return None
+            
+        # Adjust parameters based on script type
+        if script_type == 'cjk':
+            # For CJK languages, use different window sizes and thresholds
+            window_size = min(segment_len * 3, 30)  # Larger window for CJK
+            step_size = max(1, window_size // 6)  # Smaller steps for more precise search
+            threshold = 0.4  # Lower threshold for acceptance
+            high_confidence = 0.7  # Lower high confidence threshold
+            
+            # Flexibility in length comparison
+            length_flexibility = segment_len // 2 if segment_len > 4 else 2
+        else:
+            # Standard parameters for other scripts
+            window_size = min(segment_len * 2, 15)
+            step_size = max(1, window_size // 4)
+            threshold = 0.5
+            high_confidence = 0.8
+            
+            # Standard length flexibility
+            length_flexibility = max(2, segment_len // 2)
+            
+        best_match = None
+        best_score = 0
+
+        for i in range(0, doc_len, step_size):
+            end_idx = min(i + window_size, doc_len)
+            
+            # Scan each possible span in the window
             for j in range(i, end_idx):
-                for k in range(j + 1, min(j + segment_len * 2, end_idx + 1)):
-                    span = doc[j:k]
-                    span_text = span.text.lower()
-                    span_tokens = span_text.split()
+                if script_type == 'cjk':
+                    # For CJK, check a wider range of span lengths
+                    min_k = j + 1
+                    max_k = min(j + segment_len * 3, end_idx + 1)
+                else:
+                    # For other scripts, limit to more reasonable span lengths
+                    min_k = j + 1
+                    max_k = min(j + segment_len * 2, end_idx + 1)
                     
-                    # Skip if length difference is too large
-                    if abs(len(span_tokens) - segment_len) > max(2, segment_len // 2):
+                for k in range(min_k, max_k):
+                    # Skip spans that are too different in length based on script
+                    if script_type != 'cjk' and abs(k - j - segment_len) > length_flexibility:
                         continue
+                        
+                    span = doc[j:k]
+                    score = self._calculate_similarity_score(span, segment_tokens, script_type=script_type)
                     
-                    # Calculate similarity score
-                    common = segment_token_set.intersection(span_tokens)
-                    score = len(common) / max(len(span_tokens), segment_len)
-                    
-                    # Early stopping for excellent matches
-                    if score > 0.8:
+                    # Early return for high-confidence matches
+                    if score > high_confidence:
                         return span
-                    
-                    if score > best_score and score > 0.5:
+                        
+                    if score > best_score and score > threshold:
                         best_score = score
                         best_match = span
-        
+                        
         return best_match
-        
-    def _fuzzy_align_large_doc(self, doc: Doc, text_segment: str) -> Optional[Span]:
+
+    def _fuzzy_align_large_doc(self, doc, text_segment: str, lang: str = None,
+                             script_type: str = 'latin') -> Optional[MockSpan]:
         """
-        Optimized fuzzy alignment for large documents.
-        
-        Uses a multi-stage approach for efficient alignment:
-        1. First tries a hash-based search for exact matches
-        2. Then uses a sliding window with early stopping
-        3. Finally uses a more targeted search in promising regions
+        Optimized fuzzy alignment for large documents using a multi-stage approach
+        with script-specific optimizations.
         
         Args:
-            doc: spaCy Doc to search in
-            text_segment: Text to find in the document
+            doc: Document object
+            text_segment: Text to align
+            lang: Language code
+            script_type: The dominant script type of the text
             
         Returns:
-            spaCy Span object or None if no good match is found
+            Best matching span or None if no match found
         """
-        segment_tokens = text_segment.lower().split()
+        # Use script-aware tokenization
+        if script_type == 'cjk':
+            segment_tokens = self._tokenize_by_script(text_segment, script_type)
+        elif script_type == 'arabic':
+            # For Arabic, use specialized tokenization
+            segment_tokens = self._tokenize_by_script(text_segment, script_type)
+        else:
+            # For Latin and other scripts, use standard tokenization
+            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
+            
         segment_len = len(segment_tokens)
-        
+        doc_len = len(doc)
+
         if segment_len == 0:
             return None
-        
-        # Safety check for doc
-        if doc is None or len(doc) == 0:
-            warnings.warn("Cannot align with empty document")
-            return None
-            
-        # For very short segments, use a more direct approach
+
+        # Special handling for very short segments with script awareness
         if segment_len <= 2:
-            return self._fuzzy_align_short_segment(doc, segment_tokens)
-        
-        # Create token sets for faster lookup
-        segment_token_set = set(segment_tokens)
-        
-        # Stage 1: Try to find distinctive tokens that might be unique
-        # Focus on longer tokens which are more likely to be distinctive
-        # If no long tokens exist, use whatever tokens we have
-        distinctive_tokens = sorted(
-            [t for t in segment_tokens if len(t) > 4],
-            key=len, reverse=True
-        )[:3]  # Take up to 3 longest tokens
-        
-        # If we don't have any long tokens, use all tokens
-        if not distinctive_tokens and segment_tokens:
-            distinctive_tokens = segment_tokens
-        
-        if distinctive_tokens:
-            # Create a quick index of these tokens in the document
-            token_positions = {}
-            for i, token in enumerate(doc):
-                token_lower = token.text.lower()
-                if token_lower in distinctive_tokens:
-                    if token_lower not in token_positions:
-                        token_positions[token_lower] = []
-                    token_positions[token_lower].append(i)
-            
-            # Check if we found any of our distinctive tokens
-            candidate_positions = []
-            for token in distinctive_tokens:
-                if token in token_positions:
-                    candidate_positions.extend(token_positions[token])
-            
-            # If we found positions, check around them first
-            if candidate_positions:
-                best_match = None
-                best_score = 0
-                
-                for pos in candidate_positions:
-                    # Check a window around this position
-                    start_idx = max(0, pos - segment_len)
-                    end_idx = min(len(doc), pos + segment_len)
-                    
-                    # Try different spans within this focused window
-                    for j in range(start_idx, pos + 1):
-                        for k in range(pos + 1, end_idx + 1):
-                            if k - j < segment_len / 2 or k - j > segment_len * 2:
-                                continue  # Skip if span length is too different
-                            
-                            span = doc[j:k]
-                            span_text = span.text.lower()
-                            span_tokens = span_text.split()
-                            
-                            # Calculate similarity score with optimized method
-                            common = segment_token_set.intersection(span_tokens)
-                            score = len(common) / max(len(span_tokens), segment_len)
-                            
-                            # Early stopping: if we find a very good match, return immediately
-                            if score > 0.8:
-                                return span
-                            
-                            if score > best_score and score > 0.5:
-                                best_score = score
-                                best_match = span
-                
-                # If we found a good match in our focused search, return it
-                if best_match is not None and best_score > 0.5:  # Lower threshold for short queries
-                    return best_match
-        
-        # Stage 2: If we didn't find a good match with distinctive tokens,
-        # fall back to an optimized sliding window approach
+            result = self._fuzzy_align_short_segment(doc, segment_tokens, lang=lang, script_type=script_type)
+            if result:
+                return result
+
+        # Script-specific search prioritization
         best_match = None
         best_score = 0
         
-        # Use adaptive window and step sizes based on document and segment length
-        window_size = min(segment_len * 3, 20)
-        step_size = max(1, window_size // 3)
-        
-        # For very large documents, increase step size further
-        if len(doc) > 10000:
-            step_size = max(5, step_size)
-            # For extremely large documents, use an even more aggressive approach
-            if len(doc) > 50000:
-                step_size = max(10, step_size)
-                # Use a binary search approach to find promising regions first
-                promising_regions = self._find_promising_regions(doc, segment_tokens)
-                if promising_regions:
-                    for start, end in promising_regions:
-                        region_match = self._fuzzy_align_region(doc[start:end], segment_tokens)
-                        if region_match is not None:
-                            # Adjust the span to be relative to the original doc
-                            return doc[start + region_match.start:start + region_match.end]
-        
-        # Slide through the document with the window
-        for i in range(0, len(doc), step_size):
-            # Create a window of tokens
-            end_idx = min(i + window_size, len(doc))
-            window_tokens = [t.text.lower() for t in doc[i:end_idx]]
+        if script_type == 'cjk':
+            # For CJK, use character sequences (n-grams) as distinctive features
+            # This approach works better for character-based scripts
+            segment_text = ''.join(segment_tokens)
             
-            # Quick check if there's any overlap in tokens
-            window_token_set = set(window_tokens)
-            overlap = segment_token_set.intersection(window_token_set)
+            # Generate n-grams as distinctive features
+            distinctive_features = []
             
-            # Skip windows with insufficient overlap
-            overlap_threshold = max(1, segment_len // 3)
-            if len(overlap) < overlap_threshold:
-                continue
+            # Add trigrams if the segment is long enough (most distinctive)
+            if len(segment_text) >= 3:
+                distinctive_features.extend([segment_text[i:i+3] for i in range(len(segment_text)-2)][:3])
+                
+            # Add bigrams as fallback
+            if len(segment_text) >= 2 and len(distinctive_features) < 3:
+                distinctive_features.extend([segment_text[i:i+2] for i in range(len(segment_text)-1)][:3-len(distinctive_features)])
+                
+            # Use individual characters if nothing else is available
+            if not distinctive_features and segment_text:
+                distinctive_features = [c for c in segment_text][:3]
+                
+            # Find positions of distinctive features in the document
+            candidate_positions = []
             
-            # Check different spans within this window, but be smarter about which ones we check
-            # Start with spans that are closest in length to our target
-            span_candidates = []
-            for j in range(i, end_idx):
-                for k in range(j + 1, min(j + segment_len * 2, end_idx + 1)):
-                    span_len = k - j
-                    # Skip if length difference is too large
-                    if abs(span_len - segment_len) > max(2, segment_len // 2):
-                        continue
+            # Sample the document to reduce memory usage for large documents
+            stride = 1
+            if doc_len > 50000:
+                stride = 5
+            elif doc_len > 10000:
+                stride = 3
+                
+            doc_text = doc.text
+            for i in range(0, doc_len, stride):
+                if i >= len(doc):
+                    break
                     
-                    # Calculate a priority score based on how close the length is to our target
-                    length_diff = abs(span_len - segment_len)
-                    priority = 1.0 / (1.0 + length_diff)
-                    span_candidates.append((j, k, priority))
+                # Get a window of text around the current position
+                idx = doc[i].idx
+                window_end = min(idx + 20, len(doc_text))
+                window_text = doc_text[idx:window_end]
+                
+                # Check if any distinctive feature is in this window
+                for feature in distinctive_features:
+                    if feature in window_text:
+                        candidate_positions.append(i)
+                        break
+                        
+                # Limit candidate positions to avoid memory issues
+                if len(candidate_positions) > 100:
+                    break
+        else:
+            # For non-CJK scripts, use standard distinctive token approach
+            if segment_len > 3:
+                # Only look at tokens longer than 4 chars (more distinctive)
+                distinctive_tokens = sorted(
+                    [t for t in segment_tokens if len(t) > 4], 
+                    key=len, reverse=True
+                )[:3]
+            else:
+                distinctive_tokens = segment_tokens
+
+            if not distinctive_tokens and segment_tokens:
+                distinctive_tokens = segment_tokens[:2]
+                
+            # Find positions of distinctive tokens in the document
+            candidate_positions = []
             
-            # Sort candidates by priority (highest first)
-            span_candidates.sort(key=lambda x: x[2], reverse=True)
+            # For extremely large documents, sample tokens to reduce memory usage
+            stride = 1
+            if doc_len > 50000:
+                stride = 3
+            elif doc_len > 10000:
+                stride = 2
+                
+            # Only process every `stride` tokens to reduce memory usage with very large docs
+            for i in range(0, doc_len, stride):
+                if i < len(doc):
+                    token_lower = doc[i].text.lower()
+                    if token_lower in distinctive_tokens:
+                        candidate_positions.append(i)
+                        
+                        # Limit candidate positions
+                        if len(candidate_positions) > 100:
+                            break
+
+        # Check spans around candidate positions
+        if candidate_positions:
+            # Adjust window parameters based on script type
+            if script_type == 'cjk':
+                window_size = min(segment_len * 3, 25)  # Larger window for CJK
+                threshold = 0.4  # Lower threshold for CJK
+                high_confidence = 0.7  # Lower high confidence threshold for CJK
+            else:
+                window_size = min(segment_len * 2, 15)
+                threshold = 0.5
+                high_confidence = 0.8
+                
+            for pos in candidate_positions:
+                # Define window around the distinctive token/feature
+                start_idx = max(0, pos - window_size)
+                end_idx = min(doc_len, pos + window_size)
+                
+                # Check spans around the position
+                check_count = 0
+                for j in range(start_idx, min(pos + 1, end_idx)):
+                    # Define span size constraints based on script type
+                    if script_type == 'cjk':
+                        min_span_size = 1
+                        max_span_size = min(segment_len * 3, 30)
+                    else:
+                        min_span_size = max(1, segment_len // 2)
+                        max_span_size = min(segment_len * 2, 20)
+                    
+                    for k in range(j + min_span_size, min(j + max_span_size, end_idx + 1)):
+                        # Skip spans that are too different in length for non-CJK scripts
+                        if script_type != 'cjk' and abs(k - j - segment_len) > max(2, segment_len // 2):
+                            continue
+                            
+                        span = doc[j:k]
+                        score = self._calculate_similarity_score(span, segment_tokens, script_type=script_type)
+                        
+                        # Early return for high-confidence matches
+                        if score > high_confidence:
+                            return span
+                            
+                        if score > best_score and score > threshold:
+                            best_score = score
+                            best_match = span
+                            
+                        # Limit number of spans checked per position
+                        check_count += 1
+                        if check_count > 50:  # Increased limit for more thorough search
+                            break
+                            
+            if best_match is not None:
+                return best_match
+
+        # For very large documents, use promising regions to narrow search
+        if doc_len > 10000:
+            promising_regions = self._find_promising_regions(doc, segment_tokens, lang=lang, script_type=script_type)
             
-            # Check the most promising candidates first, with early stopping
-            for j, k, _ in span_candidates[:10]:  # Limit to top 10 candidates
-                span = doc[j:k]
-                span_text = span.text.lower()
-                span_tokens = span_text.split()
+            if promising_regions:
+                # Check more regions for CJK to increase chances of finding matches
+                regions_to_check = 10 if script_type == 'cjk' else 5
                 
-                # Calculate similarity score
-                common = segment_token_set.intersection(span_tokens)
-                score = len(common) / max(len(span_tokens), segment_len)
-                
-                # Bonus for position-preserving matches
-                position_bonus = 0
-                for pos, token in enumerate(segment_tokens):
-                    if pos < len(span_tokens) and span_tokens[pos] == token:
-                        position_bonus += 0.1
-                
-                score += position_bonus
-                
-                # Early stopping for excellent matches
-                if score > 0.8:
-                    return span
-                
-                if score > best_score and score > 0.5:
-                    best_score = score
-                    best_match = span
+                for start, end in promising_regions[:regions_to_check]:
+                    region_match = self._fuzzy_align_region(
+                        doc[start:end], segment_tokens, lang=lang, script_type=script_type
+                    )
+                    if region_match is not None:
+                        return doc[start + region_match.start:start + region_match.end]
+
+        # Fallback to optimized windowed search with script-specific parameters
+        if script_type == 'cjk':
+            window_size = min(segment_len * 4, 30)  # Larger window for CJK
+            step_size = max(window_size // 3, 5)  # Smaller steps for more precise search
+            threshold = 0.4  # Lower threshold for CJK
+            high_confidence = 0.7  # Lower high confidence threshold for CJK
+        else:
+            window_size = min(segment_len * 3, 15)
+            step_size = max(window_size // 2, segment_len)
+            threshold = 0.5
+            high_confidence = 0.8
         
+        # Adjust step size for very large documents
+        if doc_len > 50000:
+            step_size = max(15, window_size)
+            
+        # Maximum number of windows to check to avoid memory leaks
+        max_windows = 1000 if script_type != 'cjk' else 2000  # More windows for CJK
+        windows_checked = 0
+            
+        # Create token sets once for efficiency
+        if script_type == 'cjk':
+            # For CJK, character-based overlap is more relevant
+            segment_chars = set(''.join(segment_tokens))
+            overlap_threshold = max(1, len(segment_chars) // 5)  # Lower threshold for CJK
+        else:
+            # For other scripts, use token-based overlap
+            segment_token_set = set(segment_tokens)
+            overlap_threshold = max(1, len(segment_token_set) // 3)
+
+        for i in range(0, doc_len, step_size):
+            if windows_checked >= max_windows:
+                break
+                
+            windows_checked += 1
+            end_idx = min(i + window_size, doc_len)
+            
+            # Check for token/character overlap in this window
+            if script_type == 'cjk':
+                # For CJK, check character overlap
+                if i < len(doc) and end_idx <= len(doc):
+                    # Get the text span and convert to a character set
+                    window_text = doc.text[doc[i].idx:doc[min(end_idx-1, len(doc)-1)].idx + len(doc[min(end_idx-1, len(doc)-1)].text)]
+                    window_chars = set(window_text)
+                    
+                    # Skip windows with insufficient character overlap
+                    if len(segment_chars.intersection(window_chars)) < overlap_threshold:
+                        continue
+            else:
+                # For other scripts, check token overlap
+                window_tokens = set()
+                for j in range(i, end_idx):
+                    if j < doc_len:
+                        window_tokens.add(doc[j].text.lower())
+                
+                # Skip windows with insufficient token overlap
+                if len(segment_token_set.intersection(window_tokens)) < overlap_threshold:
+                    continue
+
+            # Check spans in this window
+            best_window_score = 0
+            best_window_match = None
+            
+            # Define target span lengths based on script type
+            if script_type == 'cjk':
+                # For CJK, check a range of lengths
+                target_lengths = [segment_len, segment_len//2, segment_len*2]
+            else:
+                # For other scripts, stay close to expected segment length
+                target_lengths = [segment_len]
+                
+            # Check spans of different target lengths
+            for target_span_length in target_lengths:
+                if target_span_length < 1:
+                    continue
+                    
+                for offset in range(min(8 if script_type == 'cjk' else 5, end_idx - i)):
+                    if i + offset < doc_len and i + offset + target_span_length <= doc_len:
+                        j = i + offset
+                        k = min(j + target_span_length, end_idx)
+                        
+                        span = doc[j:k]
+                        score = self._calculate_similarity_score(span, segment_tokens, script_type=script_type)
+                        
+                        # Early return for high-confidence matches
+                        if score > high_confidence:
+                            return span
+                            
+                        if score > best_window_score and score > threshold:
+                            best_window_score = score
+                            best_window_match = span
+            
+            # Update global best if this window had a good match
+            if best_window_match and best_window_score > best_score:
+                best_score = best_window_score
+                best_match = best_window_match
+                    
         return best_match
