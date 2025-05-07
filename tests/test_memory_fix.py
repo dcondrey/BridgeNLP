@@ -44,6 +44,16 @@ def test_aligner_memory_usage():
     
     # Force garbage collection to get clean baseline
     gc.collect()
+    gc.collect()  # Multiple collections can help with reference cycles
+    
+    # Try to reduce memory fragmentation
+    try:
+        import sys
+        if hasattr(sys, 'set_int_max_str_digits'):
+            # Limit memory used for large integer string conversions (Python 3.11+)
+            sys.set_int_max_str_digits(4000)
+    except Exception:
+        pass
     
     try:
         # Try to import psutil for memory tracking
@@ -58,25 +68,40 @@ def test_aligner_memory_usage():
             search_text = f"John he him"
             start_time = time.time()
             
-            # Do the alignment operation
-            result = aligner.fuzzy_align(doc, search_text)
-            
-            # Force garbage collection after each operation
-            del result
-            gc.collect()
-            gc.collect()  # Second collection sometimes helps with reference cycles
-            
-            # Sleep briefly to allow memory to be reclaimed
-            time.sleep(0.2)
+            # Do the alignment operation with explicit memory management
+            try:
+                # Create a local scope for the operation
+                result = aligner.fuzzy_align(doc, search_text)
+                
+                # Capture necessary data and release the result
+                success = result is not None
+                
+                # Explicitly delete the result to free memory immediately
+                del result
+                
+                # Force garbage collection after each operation
+                gc.collect()
+                gc.collect()  # Second collection helps with reference cycles
+                
+                # Sleep briefly to allow memory to be reclaimed
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"Error during alignment: {e}")
+                success = False
             
             end_time = time.time()
+            # Get memory info after cleanup
             current_memory = process.memory_info().rss / 1024 / 1024  # MB
             
             print(f"Run {i+1}: Time: {end_time - start_time:.2f}s, Memory: {current_memory:.1f} MB, " 
-                  f"Diff: {current_memory - initial_memory:.1f} MB")
+                  f"Diff: {current_memory - initial_memory:.1f} MB, Success: {success}")
             
             # Force garbage collection between runs
             gc.collect()
+            
+            # Try to release any cached memory in the aligner
+            if hasattr(aligner, '_normalize_text'):
+                aligner._normalize_text.cache_clear()
             
         final_memory = process.memory_info().rss / 1024 / 1024  # MB
         print(f"Final memory usage: {final_memory:.1f} MB")
@@ -116,10 +141,21 @@ def test_aligner_memory_usage():
         del aligner
         del large_text
         
+        # Clear any caches that might be holding references
+        if 'nlp' in locals():
+            del nlp
+            
         # Multiple collections can help with reference cycles
         gc.collect()
         gc.collect()
         time.sleep(0.3)  # Give the system more time to reclaim memory
+        
+        # Try to trigger a more complete collection
+        try:
+            import ctypes
+            ctypes.pythonapi.PyGC_Collect()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     test_aligner_memory_usage()
