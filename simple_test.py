@@ -1,11 +1,3 @@
-"""
-Simple test script for the enhanced multilingual token alignment capabilities.
-This script tests basic functionality without requiring external dependencies.
-"""
-
-from bridgenlp.aligner import TokenAligner
-
-def test_script_detection():
     """Test script detection for various languages."""
     print("\nTesting script detection...")
     
