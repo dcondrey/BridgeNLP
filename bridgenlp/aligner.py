@@ -1069,13 +1069,13 @@ class TokenAligner:
         # Use script-aware alignment strategies
         if doc_len > 1000:
             return self._fuzzy_align_large_doc(doc, clean_segment, lang=lang, 
-                                           script_type=script_type, segment_tokens=segment_tokens)
+                                           script_type=script_type)
         elif doc_len > 100:
             return self._fuzzy_align_medium_doc(doc, clean_segment, lang=lang, 
-                                            script_type=script_type, segment_tokens=segment_tokens)
+                                            script_type=script_type)
         else:
             return self._fuzzy_align_small_doc(doc, clean_segment, lang=lang, 
-                                           script_type=script_type, segment_tokens=segment_tokens)
+                                           script_type=script_type)
 
     def _calculate_similarity_score(self, span, segment_tokens: List[str], 
                                   script_type: str = 'latin') -> float:
@@ -1102,7 +1102,7 @@ class TokenAligner:
             return self._script_handlers["other"]["score"](span, segment_tokens)
 
     def _fuzzy_align_small_doc(self, doc, text_segment: str, lang: str = None, 
-                            script_type: str = 'latin') -> Optional[MockSpan]:
+                            script_type: str = 'latin', segment_tokens: List[str] = None) -> Optional[MockSpan]:
         """
         Perform fuzzy alignment for small documents with script awareness.
         
@@ -1115,11 +1115,12 @@ class TokenAligner:
         Returns:
             Best matching span or None if no match found
         """
-        # Use script-aware tokenization
-        if script_type == 'cjk':
-            segment_tokens = self._tokenize_by_script(text_segment, script_type)
-        else:
-            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment) if t.strip()]
+        # Use script-aware tokenization if segment_tokens not provided
+        if segment_tokens is None:
+            if script_type == 'cjk':
+                segment_tokens = self._tokenize_by_script(text_segment, script_type)
+            else:
+                segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment) if t.strip()]
             
         if not segment_tokens:
             return None
@@ -1397,7 +1398,7 @@ class TokenAligner:
         return best_match
 
     def _fuzzy_align_medium_doc(self, doc, text_segment: str, lang: str = None,
-                             script_type: str = 'latin') -> Optional[MockSpan]:
+                             script_type: str = 'latin', segment_tokens: List[str] = None) -> Optional[MockSpan]:
         """
         Optimized fuzzy alignment for medium-sized documents with script awareness.
         
@@ -1410,11 +1411,12 @@ class TokenAligner:
         Returns:
             Best matching span or None if no match found
         """
-        # Use script-aware tokenization
-        if script_type == 'cjk':
-            segment_tokens = self._tokenize_by_script(text_segment, script_type)
-        else:
-            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
+        # Use script-aware tokenization if segment_tokens not provided
+        if segment_tokens is None:
+            if script_type == 'cjk':
+                segment_tokens = self._tokenize_by_script(text_segment, script_type)
+            else:
+                segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
             
         segment_len = len(segment_tokens)
         doc_len = len(doc)
@@ -1478,7 +1480,7 @@ class TokenAligner:
         return best_match
 
     def _fuzzy_align_large_doc(self, doc, text_segment: str, lang: str = None,
-                             script_type: str = 'latin') -> Optional[MockSpan]:
+                             script_type: str = 'latin', segment_tokens: List[str] = None) -> Optional[MockSpan]:
         """
         Optimized fuzzy alignment for large documents using a multi-stage approach
         with script-specific optimizations.
@@ -1492,15 +1494,16 @@ class TokenAligner:
         Returns:
             Best matching span or None if no match found
         """
-        # Use script-aware tokenization
-        if script_type == 'cjk':
-            segment_tokens = self._tokenize_by_script(text_segment, script_type)
-        elif script_type == 'arabic':
-            # For Arabic, use specialized tokenization
-            segment_tokens = self._tokenize_by_script(text_segment, script_type)
-        else:
-            # For Latin and other scripts, use standard tokenization
-            segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
+        # Use script-aware tokenization if segment_tokens not provided
+        if segment_tokens is None:
+            if script_type == 'cjk':
+                segment_tokens = self._tokenize_by_script(text_segment, script_type)
+            elif script_type == 'arabic':
+                # For Arabic, use specialized tokenization
+                segment_tokens = self._tokenize_by_script(text_segment, script_type)
+            else:
+                # For Latin and other scripts, use standard tokenization
+                segment_tokens = [t for t in re.findall(r'\w+|[^\w\s]', text_segment.lower()) if t.strip()]
             
         segment_len = len(segment_tokens)
         doc_len = len(doc)
