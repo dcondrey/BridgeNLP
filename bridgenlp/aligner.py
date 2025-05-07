@@ -1544,12 +1544,14 @@ class TokenAligner:
             Best matching span or None if no match found
         """
         # Limit text segment size to prevent memory issues
-        if len(text_segment) > 10000:
+        if text_segment and len(text_segment) > 10000:
             text_segment = text_segment[:10000]
             warnings.warn(f"Text segment truncated to 10000 characters for memory efficiency")
         # Use script-aware tokenization if segment_tokens not provided
         if segment_tokens is None:
-            if script_type == 'cjk':
+            if not text_segment:
+                segment_tokens = []
+            elif script_type == 'cjk':
                 segment_tokens = self._tokenize_by_script(text_segment, script_type)
             elif script_type == 'arabic':
                 # For Arabic, use specialized tokenization

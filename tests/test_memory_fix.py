@@ -85,13 +85,15 @@ def test_aligner_memory_usage():
             # Do the alignment operation with explicit memory management
             try:
                 # Create a local scope for the operation
-                result = aligner.fuzzy_align(doc, search_text)
-                
-                # Capture necessary data and release the result
-                success = result is not None
-                
-                # Explicitly delete the result to free memory immediately
-                del result
+                result = None
+                try:
+                    result = aligner.fuzzy_align(doc, search_text)
+                    # Capture necessary data
+                    success = result is not None
+                finally:
+                    # Explicitly delete the result to free memory immediately
+                    if result is not None:
+                        del result
                 
                 # Force garbage collection after each operation
                 gc.collect()

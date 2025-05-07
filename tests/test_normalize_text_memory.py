@@ -37,7 +37,9 @@ def test_normalize_text_memory():
             
             # Call _normalize_text_uncached directly to test memory usage
             # This avoids the warning from fuzzy_align when it can't find a match
-            aligner._normalize_text_uncached(long_text)
+            result = aligner._normalize_text_uncached(long_text)
+            # Immediately delete the result to free memory
+            del result
             
             end_time = time.time()
             after_mem = process.memory_info().rss / 1024 / 1024
@@ -67,7 +69,9 @@ def test_normalize_text_memory():
             long_text = "a" * length
             
             start_time = time.time()
-            aligner._normalize_text_uncached(long_text)
+            result = aligner._normalize_text_uncached(long_text)
+            # Immediately delete the result to free memory
+            del result
             end_time = time.time()
             
             print(f"Run {i}: Text length: {length}, Time: {end_time - start_time:.2f}s")
