@@ -7,6 +7,7 @@ and improved performance for both small and large documents.
 """
 
 import re
+import time
 import warnings
 from typing import List, Optional, Tuple, Dict, Set, Union, Callable
 import unicodedata
@@ -181,6 +182,9 @@ class TokenAligner:
             nlp: Optional spaCy NLP pipeline
             default_language: Default spaCy model name (default: 'en_core_web_sm')
         """
+        # Set memory cleanup interval
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 300  # 5 minutes
         self.nlp = nlp
         self.default_language = default_language
         self._has_spacy = False
@@ -799,6 +803,31 @@ class TokenAligner:
         # Default to Latin scoring
         return self._score_latin(span, segment_tokens)
     
+    def cleanup_resources(self):
+        """
+        Clean up cached resources to free memory.
+        This should be called periodically for long-running applications.
+        """
+        # Clear the LRU cache for normalize_text
+        if hasattr(self, '_normalize_text'):
+            self._normalize_text.cache_clear()
+            
+        # Clear language models that aren't the default
+        if hasattr(self, '_language_models') and self.default_language in self._language_models:
+            default_model = self._language_models[self.default_language]
+            self._language_models = {self.default_language: default_model}
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+    def _maybe_cleanup(self):
+        """Check if it's time to clean up resources and do so if needed."""
+        current_time = time.time()
+        if current_time - self._last_cleanup > self._cleanup_interval:
+            self.cleanup_resources()
+            self._last_cleanup = current_time
+            
     def _detect_script_type(self, text: str) -> str:
         """
         Detect the dominant script type in a text.
@@ -853,7 +882,7 @@ class TokenAligner:
         dominant_script = max(script_counts.items(), key=lambda x: x[1])[0]
         return dominant_script
         
-    @lru_cache(maxsize=1024)
+    @lru_cache(maxsize=512)  # Reduced cache size to prevent memory bloat
     def _normalize_text(self, text: str, lang: str = None) -> str:
         """
         Normalize text while preserving important features of different scripts.
@@ -866,7 +895,7 @@ class TokenAligner:
             Normalized text
         """
         # For very long inputs, don't use cache to avoid memory leaks
-        if len(text) > 1000:
+        if len(text) > 500:  # Reduced threshold to avoid caching large strings
             return self._normalize_text_uncached(text, lang)
             
         # Clean whitespace first
@@ -977,6 +1006,13 @@ class TokenAligner:
         Returns:
             Best matching span or None if no match found
         """
+        # Periodically clean up resources to prevent memory leaks
+        self._maybe_cleanup()
+        
+        # Limit text segment size to prevent memory issues
+        if text_segment and len(text_segment) > 5000:
+            text_segment = text_segment[:5000]
+            warnings.warn(f"Text segment truncated to 5000 characters for memory efficiency")
         # Validate inputs
         if doc is None or not text_segment:
             warnings.warn("Cannot align span: Doc is None or text_segment is empty")
@@ -1128,13 +1164,14 @@ class TokenAligner:
         best_match = None
         best_score = 0
         
-        # Adjust window size based on script type
+        # Adjust window size based on script type, with stricter limits for memory efficiency
         if script_type == 'cjk':
             # For CJK, use a wider window since character tokenization creates more tokens
-            max_window_size = min(len(segment_tokens) * 5, len(doc))
+            # but limit the absolute size to prevent memory issues
+            max_window_size = min(len(segment_tokens) * 3, len(doc), 50)
         else:
-            # For other scripts, use the standard window size
-            max_window_size = min(len(segment_tokens) * 3, len(doc))
+            # For other scripts, use the standard window size with stricter limits
+            max_window_size = min(len(segment_tokens) * 2, len(doc), 30)
 
         for i in range(len(doc)):
             for j in range(i + 1, min(i + max_window_size, len(doc) + 1)):
@@ -1249,6 +1286,9 @@ class TokenAligner:
         Returns:
             List of (start, end) index tuples for promising regions
         """
+        # Limit the number of tokens to process to prevent memory issues
+        if len(segment_tokens) > 100:
+            segment_tokens = segment_tokens[:100]
         if not segment_tokens:
             return []
             
@@ -1298,12 +1338,13 @@ class TokenAligner:
         else:
             # Extract only the most distinctive tokens to reduce memory usage
             # and improve relevance of matches for non-CJK scripts
-            if len(segment_tokens) > 5:
+            if len(segment_tokens) > 3:  # Reduced from 5 to 3 for memory efficiency
                 # Sort tokens by length in descending order (longer = more distinctive)
-                sorted_tokens = sorted([t for t in segment_tokens if len(t) > 3], 
+                # Only consider tokens of reasonable length to avoid memory issues with very long tokens
+                sorted_tokens = sorted([t for t in segment_tokens if 3 < len(t) < 20], 
                                       key=len, reverse=True)
-                # Use up to 5 most distinctive tokens
-                segment_token_set = {t.lower() for t in sorted_tokens[:5]}
+                # Use up to 3 most distinctive tokens (reduced from 5)
+                segment_token_set = {t.lower() for t in sorted_tokens[:3]}
                 
                 # Always include at least 2 tokens, even if they're short
                 if len(segment_token_set) < 2 and len(segment_tokens) >= 2:
@@ -1313,11 +1354,19 @@ class TokenAligner:
             
             doc_len = len(doc)
             # Adjust chunk size based on document length to avoid excessive memory usage
-            chunk_size = min(1000, max(100, doc_len // 50))
+            chunk_size = min(500, max(100, doc_len // 100))  # Smaller chunks
             promising_regions = []
+            
+            # Limit the number of regions to check for very large documents
+            max_chunks = 20
+            chunks_checked = 0
 
             for i in range(0, doc_len, chunk_size):
-                end_idx = min(i + chunk_size * 2, doc_len)
+                if chunks_checked >= max_chunks:
+                    break
+                    
+                chunks_checked += 1
+                end_idx = min(i + chunk_size, doc_len)  # Reduced overlap
                 
                 # Collect chunk tokens without creating a full span object
                 chunk_tokens = set()
@@ -1326,7 +1375,7 @@ class TokenAligner:
                         chunk_tokens.add(doc[j].text.lower())
                     
                     # Limit size of chunk_tokens to avoid memory bloat
-                    if len(chunk_tokens) > 1000:
+                    if len(chunk_tokens) > 500:  # Reduced from 1000
                         break
                 
                 # Consider regions with sufficient token overlap
@@ -1494,6 +1543,10 @@ class TokenAligner:
         Returns:
             Best matching span or None if no match found
         """
+        # Limit text segment size to prevent memory issues
+        if len(text_segment) > 10000:
+            text_segment = text_segment[:10000]
+            warnings.warn(f"Text segment truncated to 10000 characters for memory efficiency")
         # Use script-aware tokenization if segment_tokens not provided
         if segment_tokens is None:
             if script_type == 'cjk':
@@ -1659,13 +1712,24 @@ class TokenAligner:
 
         # For very large documents, use promising regions to narrow search
         if doc_len > 10000:
+            # Limit the number of regions to check based on document size to prevent memory issues
+            max_regions = 5
+            if doc_len > 50000:
+                max_regions = 3
+            
             promising_regions = self._find_promising_regions(doc, segment_tokens, lang=lang, script_type=script_type)
             
             if promising_regions:
-                # Check more regions for CJK to increase chances of finding matches
-                regions_to_check = 10 if script_type == 'cjk' else 5
+                # Check fewer regions to reduce memory usage
+                regions_to_check = min(max_regions, 3 if script_type == 'cjk' else 2)
                 
                 for start, end in promising_regions[:regions_to_check]:
+                    # Limit region size to prevent memory issues
+                    if end - start > 1000:
+                        mid = start + (end - start) // 2
+                        end = min(mid + 500, end)
+                        start = max(mid - 500, start)
+                    
                     region_match = self._fuzzy_align_region(
                         doc[start:end], segment_tokens, lang=lang, script_type=script_type
                     )
