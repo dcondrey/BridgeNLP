@@ -78,8 +78,8 @@ def test_aligner_memory_usage():
         
         print("Running multiple alignment operations...")
         for i in range(3):  # Reduced number of iterations
-            # Create a new search text each time to avoid caching effects
-            search_text = f"John he him {i}"
+            # Create a search text that will definitely be found in the document
+            search_text = "John he him"
             start_time = time.time()
             
             # Do the alignment operation with explicit memory management
@@ -90,6 +90,8 @@ def test_aligner_memory_usage():
                     result = aligner.fuzzy_align(doc, search_text)
                     # Capture necessary data
                     success = result is not None
+                    if not success:
+                        print(f"Warning: No match found for '{search_text}'")
                 finally:
                     # Explicitly delete the result to free memory immediately
                     if result is not None:
