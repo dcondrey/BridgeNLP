@@ -114,3 +114,10 @@ class TestTokenAligner:
         # No good match
         span = aligner.fuzzy_align(doc, "completely different text")
         assert span is None
+        
+    def test_script_detection(self, aligner):
+        """Test script type detection."""
+        assert aligner._detect_script_type("Hello world") == "latin"
+        assert aligner._detect_script_type("你好世界") == "cjk"
+        assert aligner._detect_script_type("مرحبا بالعالم") == "arabic"
+        assert aligner._detect_script_type("Привет мир") == "cyrillic"

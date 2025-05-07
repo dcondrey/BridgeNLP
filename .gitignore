@@ -1,89 +1,49 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
+# Virtual Environments
 env/
 venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
+.venv/
+
+# Dependency directories
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
 *.egg-info/
-.installed.cfg
+
+# Build artifacts
+build/
+dist/
 *.egg
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
+# Test artifacts
+.cache/
 .coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
 .pytest_cache/
-test-results/
+htmlcov/
 
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# Cython debug symbols
-cython_debug/
-
-# VS Code settings
+# IDE / Editor
 .vscode/
+.idea/
 
-# Editor backups and swap files
-*~
-*.swp
-*.swo
-*.bak
-
-# MacOS files
+# OS files
 .DS_Store
 
-# Local development env files
+# Environment and secrets
 .env
 .env.*
-.venv
-*.env
 
+# Project-specific
+CLAUDE.md
+ENHANCEMENT*.md
+.claude/
+prompts.md
 .aider*
+autoaider.py
+
+# Ignore backup files
+*~
+*.bak
+*.swp
+*.swo

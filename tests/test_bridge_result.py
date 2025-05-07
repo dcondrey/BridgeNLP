@@ -48,8 +48,14 @@ class TestBridgeResult:
         )
         json_data = result.to_json()
         assert json_data["tokens"] == ["This", "is", "a", "test"]
-        assert json_data["spans"] == [(0, 1), (2, 4)]
-        assert json_data["clusters"] == [[(0, 1), (3, 4)]]
+        
+        # Spans should now be lists, not tuples (for JSON compatibility)
+        assert json_data["spans"] == [[0, 1], [2, 4]]
+        
+        # Clusters should also use lists instead of tuples
+        expected_clusters = [[[0, 1], [3, 4]]]
+        assert json_data["clusters"] == expected_clusters
+        
         assert json_data["roles"] == [{"role": "ARG0", "text": "This"}]
         assert json_data["labels"] == ["PERSON", "O", "O", "O"]
     

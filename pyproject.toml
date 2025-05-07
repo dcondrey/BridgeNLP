@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridgenlp"
-version = "0.1.2"
-description = "A lightweight, extensible framework for bridging advanced NLP models with token-based pipelines like spaCy"
+version = "0.4.0"
+description = "A lightweight, extensible framework for bridging advanced NLP and multimodal models with structured pipelines like spaCy, supporting text, image, and audio inputs"
 readme = "README.md"
 authors = [
     {name = "David L Condrey"}
@@ -38,15 +38,20 @@ dependencies = [
 
 [project.optional-dependencies]
 allennlp = ["allennlp>=2.10", "allennlp-models>=2.10"]
-huggingface = ["transformers>=4.25", "torch>=1.10", "sentencepiece"]
+huggingface = ["transformers>=4.25", "torch>=1.10", "sentencepiece", "rich", "langdetect>=1.0.9"]
 nltk = ["nltk>=3.6"]
+multimodal = ["transformers>=4.25", "torch>=1.10", "Pillow>=9.0.0", "timm>=0.6.0"]
 "all" = [
     "allennlp>=2.10",
     "allennlp-models>=2.10",
     "transformers>=4.25",
     "torch>=1.10",
     "sentencepiece",
-    "nltk>=3.6"
+    "nltk>=3.6",
+    "rich",
+    "langdetect>=1.0.9",
+    "Pillow>=9.0.0",
+    "timm>=0.6.0"
 ]
 "dev" = [
     "pytest",
@@ -69,6 +74,9 @@ bridgenlp = "bridgenlp.cli:main"
 
 [tool.setuptools]
 packages = ["bridgenlp", "bridgenlp.adapters", "bridgenlp.pipes"]
+
+[tool.setuptools.package-data]
+"bridgenlp" = ["py.typed"]
 
 [tool.black]
 line-length = 88

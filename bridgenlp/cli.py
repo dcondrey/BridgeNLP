@@ -173,6 +173,45 @@ def load_bridge(model_type: str, model_name: Optional[str] = None,
                 "pip install transformers torch numpy"
             )
     
+    elif model_type == "summarization" or model_type == "summary":
+        try:
+            from .adapters.hf_summarization import HuggingFaceSummarizationBridge
+            return HuggingFaceSummarizationBridge(
+                model_name=config.model_name or "facebook/bart-large-cnn",
+                config=config
+            )
+        except ImportError:
+            raise ImportError(
+                "Hugging Face dependencies not found. Install with: "
+                "pip install transformers torch"
+            )
+    
+    elif model_type == "paraphrase":
+        try:
+            from .adapters.hf_paraphrase import HuggingFaceParaphraseBridge
+            return HuggingFaceParaphraseBridge(
+                model_name=config.model_name or "tuner007/pegasus_paraphrase",
+                config=config
+            )
+        except ImportError:
+            raise ImportError(
+                "Hugging Face dependencies not found. Install with: "
+                "pip install transformers torch"
+            )
+    
+    elif model_type == "translation" or model_type == "translate":
+        try:
+            from .adapters.hf_translation import HuggingFaceTranslationBridge
+            return HuggingFaceTranslationBridge(
+                model_name=config.model_name or "Helsinki-NLP/opus-mt-en-fr",
+                config=config
+            )
+        except ImportError:
+            raise ImportError(
+                "Hugging Face dependencies not found. Install with: "
+                "pip install transformers torch"
+            )
+    
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 

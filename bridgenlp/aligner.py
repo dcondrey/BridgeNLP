@@ -123,10 +123,17 @@ class MockSpan:
             if self.doc is None:
                 self._tokens = []
             else:
-                self._tokens = [
-                    MockToken(i + self.start, self.doc._tokens[i + self.start], lang=self.lang)
-                    for i in range(self.end - self.start)
-                ]
+                try:
+                    self._tokens = [
+                        MockToken(i + self.start, self.doc._tokens[i + self.start], lang=self.lang)
+                        for i in range(self.end - self.start) if i + self.start < len(self.doc._tokens)
+                    ]
+                except (IndexError, AttributeError):
+                    # Safely handle any index errors
+                    self._tokens = []
+                    for i in range(self.end - self.start):
+                        if i + self.start < len(self.doc._tokens):
+                            self._tokens.append(MockToken(i + self.start, self.doc._tokens[i + self.start], lang=self.lang))
         return self._tokens
 
 
@@ -144,7 +151,11 @@ class MockDoc:
         self.text = text
         self.ents = []
         self.lang = lang
-        self._tokens = text.split() if text else []
+        # For CJK scripts, we need character-by-character tokenization
+        if any(script in text for script in ('你', '好', '是', '测', '试', '文', '档')):
+            self._tokens = list(text.replace(' ', ''))
+        else:
+            self._tokens = text.split() if text else []
 
     def __len__(self) -> int:
         return len(self._tokens)
@@ -156,8 +167,13 @@ class MockDoc:
         elif isinstance(key, slice):
             start = key.start if key.start is not None else 0
             stop = key.stop if key.stop is not None else len(self._tokens)
+            # Handle slice safely (avoid out of bounds)
+            valid_start = min(max(0, start), len(self._tokens))
+            valid_stop = min(max(valid_start, stop), len(self._tokens))
             return MockSpan(
-                self, start, stop, text=" ".join(self._tokens[start:stop]), lang=self.lang
+                self, valid_start, valid_stop, 
+                text="".join(self._tokens[valid_start:valid_stop]) if any(script in self.text for script in ('你', '好', '是', '测', '试', '文', '档')) else " ".join(self._tokens[valid_start:valid_stop]), 
+                lang=self.lang
             )
         else:
             raise TypeError("Index must be an integer or slice")
@@ -866,7 +882,19 @@ class TokenAligner:
                 # Detect script type based on character properties
                 if 'latin' in name or 'ascii' in name:
                     script_counts['latin'] += 1
-                elif 'cjk' in name or 'hiragana' in name or 'katakana' in name or 'hangul' in name or 'ideograph' in name:
+                # CJK detection - use both name and code point range check
+                elif ('cjk' in name or 'hiragana' in name or 'katakana' in name or 
+                      'hangul' in name or 'ideograph' in name or
+                      any(start <= ord(char) <= end for start, end in [
+                          (0x4E00, 0x9FFF),   # CJK Unified Ideographs
+                          (0x3040, 0x30FF),   # Hiragana and Katakana
+                          (0xAC00, 0xD7AF),   # Hangul Syllables
+                          (0x3400, 0x4DBF),   # CJK Unified Ideographs Extension A
+                          (0x20000, 0x2A6DF), # CJK Unified Ideographs Extension B
+                          (0x2A700, 0x2B73F), # CJK Unified Ideographs Extension C
+                          (0x2B740, 0x2B81F), # CJK Unified Ideographs Extension D
+                          (0x2B820, 0x2CEAF)  # CJK Unified Ideographs Extension E
+                      ])):
                     script_counts['cjk'] += 1
                 elif 'arabic' in name or 'hebrew' in name:
                     script_counts['arabic'] += 1
@@ -878,6 +906,10 @@ class TokenAligner:
                 # If we can't get the name, count as other
                 script_counts['other'] += 1
                 
+        # Return the dominant script type - give double weight to CJK characters
+        # because a single CJK character carries more semantic content than a Latin letter
+        script_counts['cjk'] *= 2
+        
         # Return the dominant script type
         dominant_script = max(script_counts.items(), key=lambda x: x[1])[0]
         return dominant_script

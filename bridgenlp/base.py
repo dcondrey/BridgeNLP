@@ -6,14 +6,16 @@ from abc import ABC, abstractmethod
 import contextlib
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, Any
 
 try:
     import spacy
+    from spacy.tokens import Doc
 except ImportError:
     # Provide a helpful error message but allow the module to be imported
     print("Warning: spaCy not installed. Install with: pip install spacy")
     spacy = None
+    Doc = Any
 
 from .config import BridgeConfig
 from .result import BridgeResult
@@ -71,8 +73,38 @@ class BridgeBase(ABC):
         # The context manager should be used in implementations, not in the abstract method
         pass
     
+    def from_batch(self, texts: List[str]) -> List[BridgeResult]:
+        """
+        Process a batch of texts for efficient processing.
+        
+        This method can be overridden by adapters that support batch processing.
+        The default implementation calls from_text for each item.
+        
+        Args:
+            texts: List of texts to process
+            
+        Returns:
+            List of BridgeResult objects
+        """
+        return [self.from_text(text) for text in texts]
+    
+    def from_token_batch(self, token_lists: List[List[str]]) -> List[BridgeResult]:
+        """
+        Process a batch of token lists for efficient processing.
+        
+        This method can be overridden by adapters that support batch processing.
+        The default implementation calls from_tokens for each item.
+        
+        Args:
+            token_lists: List of token lists to process
+            
+        Returns:
+            List of BridgeResult objects
+        """
+        return [self.from_tokens(tokens) for tokens in token_lists]
+    
     @abstractmethod
-    def from_spacy(self, doc: spacy.tokens.Doc) -> spacy.tokens.Doc:
+    def from_spacy(self, doc: "Doc") -> "Doc":
         """
         Process a spaCy Doc and return an enhanced Doc with results attached.
         
@@ -84,6 +116,21 @@ class BridgeBase(ABC):
         """
         # The context manager should be used in implementations, not in the abstract method
         pass
+    
+    def from_spacy_batch(self, docs: List["Doc"]) -> List["Doc"]:
+        """
+        Process a batch of spaCy Docs for efficient processing.
+        
+        This method can be overridden by adapters that support batch processing.
+        The default implementation calls from_spacy for each item.
+        
+        Args:
+            docs: List of spaCy Docs to process
+            
+        Returns:
+            List of processed spaCy Docs
+        """
+        return [self.from_spacy(doc) for doc in docs]
     
     @contextlib.contextmanager
     def _measure_performance(self):

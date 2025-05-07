@@ -53,18 +53,38 @@ class SpacyNERBridge(BridgeBase):
             if self.use_gpu:
                 spacy.prefer_gpu()
                 
-            # Load model with only NER component for efficiency
-            self._nlp = spacy.load(self.model_name, disable=["tagger", "parser", "attribute_ruler", "lemmatizer"])
+            try:
+                # Load model with only NER component for efficiency
+                self._nlp = spacy.load(self.model_name, disable=["tagger", "parser", "attribute_ruler", "lemmatizer"])
+            except OSError:
+                # Attempt to download the model automatically
+                try:
+                    import sys
+                    from spacy.cli import download
+                    print(f"Downloading spaCy model '{self.model_name}'... (this may take a moment)")
+                    download(self.model_name)
+                    self._nlp = spacy.load(self.model_name, disable=["tagger", "parser", "attribute_ruler", "lemmatizer"])
+                    print(f"Successfully downloaded and loaded spaCy model '{self.model_name}'")
+                except Exception as e:
+                    raise ImportError(
+                        f"spaCy model '{self.model_name}' not found and automatic download failed: {str(e)}. "
+                        f"Install manually with: python -m spacy download {self.model_name}"
+                    )
             
             # Verify NER component is available
             if "ner" not in self._nlp.pipe_names:
                 raise ValueError(f"Model {self.model_name} does not have an NER component")
                 
-        except OSError:
-            raise ImportError(
-                f"spaCy model '{self.model_name}' not found. Install with: "
-                f"python -m spacy download {self.model_name}"
-            )
+        except Exception as e:
+            # Catch any other exceptions that might occur during initialization
+            if isinstance(e, ImportError) or isinstance(e, ValueError):
+                # Re-raise the specific errors we've already captured
+                raise e
+            else:
+                # For other exceptions, provide a more generic error message
+                raise RuntimeError(
+                    f"Error initializing spaCy NER model '{self.model_name}': {str(e)}"
+                )
     
     @property
     def nlp(self):

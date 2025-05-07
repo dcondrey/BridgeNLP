@@ -14,16 +14,19 @@ from typing import Any, Dict, Optional, Union
 @dataclass
 class BridgeConfig:
     """
-    Configuration container for bridge adapters.
+    Configuration container for bridge adapters and pipelines.
     
     This class provides a standardized way to configure bridge adapters
-    with consistent options and serialization capabilities.
+    and pipelines with consistent options and serialization capabilities.
     """
     
     # Model configuration
-    model_type: str
+    model_type: Optional[str] = None
     model_name: Optional[str] = None
     device: Union[int, str] = -1  # -1 for CPU, >=0 for specific GPU, or "cuda"/"cpu"
+    
+    # Modality configuration
+    modality: str = "text"  # Options: "text", "image", "audio", "multimodal"
     
     # Performance options
     batch_size: int = 1
@@ -33,10 +36,26 @@ class BridgeConfig:
     
     # Resource management
     unload_on_del: bool = True
-    cache_size: int = 1  # For LRU caches
+    cache_size: int = 100  # For LRU caches
+    
+    # Result caching
+    cache_results: bool = False  # Enable result caching for pipelines
     
     # Metrics collection
     collect_metrics: bool = False
+    
+    # Pipeline options
+    pipeline_parallel: bool = False  # Run pipeline stages in parallel when possible
+    pipeline_timeout: Optional[float] = None  # Timeout for pipeline operations in seconds
+    
+    # Image processing options
+    image_size: Optional[Dict[str, int]] = None  # e.g., {"height": 224, "width": 224}
+    image_processor: Optional[str] = None
+    
+    # Audio processing options
+    audio_sample_rate: int = 16000
+    max_audio_length: Optional[float] = None
+    audio_processor: Optional[str] = None
     
     # Model-specific parameters
     params: Dict[str, Any] = field(default_factory=dict)

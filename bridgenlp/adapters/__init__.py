@@ -38,6 +38,22 @@ try:
 except ImportError:
     pass
 
+# Text generation adapters
+try:
+    from .hf_summarization import HuggingFaceSummarizationBridge
+except ImportError:
+    pass
+
+try:
+    from .hf_paraphrase import HuggingFaceParaphraseBridge
+except ImportError:
+    pass
+
+try:
+    from .hf_translation import HuggingFaceTranslationBridge
+except ImportError:
+    pass
+
 # Other frameworks
 try:
     from .nltk_adapter import NLTKBridge
