@@ -650,6 +650,22 @@ for i in range(0, len(text), batch_size):
 # bridgenlp predict --model ner --file large_document.txt --batch-size 100
 ```
 
+## Environment Variables
+
+BridgeNLP can read configuration overrides from environment variables. These
+values take precedence over those provided in dictionaries or JSON files when
+creating a `BridgeConfig` instance.
+
+- `BRIDGENLP_DEVICE` – Device identifier (e.g. `"cpu"`, `"cuda"` or `0`).
+- `BRIDGENLP_BATCH_SIZE` – Default batch size for adapters and pipelines.
+
+For example:
+
+```bash
+export BRIDGENLP_DEVICE=cuda
+export BRIDGENLP_BATCH_SIZE=8
+```
+
 ## Performance Notes and Limitations
 
 - **Memory usage**: BridgeNLP is designed to minimize memory usage by avoiding deep copies and cleaning up resources.

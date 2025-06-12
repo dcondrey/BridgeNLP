@@ -110,3 +110,30 @@ class TestBridgeConfig:
         """Test error handling for missing files."""
         with pytest.raises(FileNotFoundError):
             BridgeConfig.from_json("/path/to/nonexistent/file.json")
+
+    def test_env_overrides_from_dict(self, monkeypatch):
+        """Environment variables override dictionary values."""
+        monkeypatch.setenv("BRIDGENLP_DEVICE", "cuda")
+        monkeypatch.setenv("BRIDGENLP_BATCH_SIZE", "5")
+        config = BridgeConfig.from_dict({
+            "model_type": "test",
+            "device": "cpu",
+            "batch_size": 1,
+        })
+        assert config.device == "cuda"
+        assert config.batch_size == 5
+
+    def test_env_overrides_from_json(self, monkeypatch, tmp_path):
+        """Environment variables override JSON config values."""
+        cfg = {
+            "model_type": "test",
+            "device": -1,
+            "batch_size": 2,
+        }
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(cfg))
+        monkeypatch.setenv("BRIDGENLP_DEVICE", "0")
+        monkeypatch.setenv("BRIDGENLP_BATCH_SIZE", "3")
+        config = BridgeConfig.from_json(str(path))
+        assert config.device == 0
+        assert config.batch_size == 3
