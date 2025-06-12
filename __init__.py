@@ -6,15 +6,18 @@ and frameworks in a consistent way.
 """
 
 # Import core components
-from bridgenlp.base import BridgeBase
-from bridgenlp.config import BridgeConfig
-from bridgenlp.multimodal_base import MultimodalBridgeBase
-from bridgenlp.pipeline import Pipeline
-from bridgenlp.result import BridgeResult
+from .bridgenlp.base import BridgeBase
+from .bridgenlp.config import BridgeConfig
+from .bridgenlp.multimodal_base import MultimodalBridgeBase
+from .bridgenlp.pipeline import Pipeline
+from .bridgenlp.result import BridgeResult
 
 # Create namespaces
-import bridgenlp.adapters as adapters
-import bridgenlp.pipes as pipes
+try:
+    from .bridgenlp import adapters, pipes
+except Exception:  # pragma: no cover - optional deps may fail
+    adapters = None
+    pipes = None
 
 __all__ = [
     "adapters",

@@ -199,6 +199,15 @@ class BridgeBase(ABC):
         """Clean up resources when used as a context manager."""
         self.cleanup()
         return False  # Don't suppress exceptions
+
+    async def __aenter__(self):
+        """Support async context manager protocol."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Clean up resources when used with ``async with``."""
+        self.cleanup()
+        return False
     
     def cleanup(self):
         """

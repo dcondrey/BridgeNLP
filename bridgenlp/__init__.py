@@ -14,6 +14,7 @@ from .result import BridgeResult
 from .aligner import TokenAligner
 from .config import BridgeConfig
 from .pipeline import Pipeline
+from .pipeline_async import AsyncPipeline
 from .multimodal_base import MultimodalBridgeBase
 
 # Import multimodal adapters
