@@ -14,7 +14,10 @@ from bridgenlp.result import BridgeResult
 
 # Create namespaces
 import bridgenlp.adapters as adapters
-import bridgenlp.pipes as pipes
+try:
+    import bridgenlp.pipes as pipes
+except Exception:
+    pipes = None
 
 __all__ = [
     "adapters",

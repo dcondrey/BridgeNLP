@@ -19,6 +19,7 @@ except ImportError:
 
 from .config import BridgeConfig
 from .result import BridgeResult
+from .utils import get_model_memory_usage
 
 
 class BridgeBase(ABC):
@@ -41,7 +42,8 @@ class BridgeBase(ABC):
             "num_calls": 0,
             "total_time": 0.0,
             "total_tokens": 0,
-            "errors": 0
+            "errors": 0,
+            "memory_mb": 0.0
         }
         self._metrics_lock = threading.RLock()
     
@@ -160,6 +162,19 @@ class BridgeBase(ABC):
             elapsed = time.time() - start_time
             with self._metrics_lock:
                 self._metrics["total_time"] += elapsed
+                if self._metrics.get("memory_mb", 0.0) == 0.0:
+                    model = None
+                    # Try to access common model attributes
+                    if hasattr(self, "model"):
+                        try:
+                            model = self.model
+                        except Exception:
+                            model = getattr(self, "_model", None)
+                    elif hasattr(self, "_model"):
+                        model = getattr(self, "_model", None)
+
+                    if model is not None:
+                        self._metrics["memory_mb"] = get_model_memory_usage(model)
     
     def get_metrics(self) -> Dict[str, float]:
         """
@@ -188,7 +203,8 @@ class BridgeBase(ABC):
                 "num_calls": 0,
                 "total_time": 0.0,
                 "total_tokens": 0,
-                "errors": 0
+                "errors": 0,
+                "memory_mb": 0.0
             }
     
     def __enter__(self):

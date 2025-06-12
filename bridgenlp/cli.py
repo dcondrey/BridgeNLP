@@ -338,14 +338,15 @@ def process_stream(bridge: BridgeBase, input_stream: TextIO,
     
     # Print summary statistics
     elapsed_time = time.time() - start_time
-    if processed_count > 0 and show_progress:
-        print(f"Processed {processed_count} texts in {elapsed_time:.4f}s "
-              f"({processed_count / elapsed_time:.2f} texts/sec)" if elapsed_time > 0 else
-              f"Processed {processed_count} texts in {elapsed_time:.4f}s", 
-              file=sys.stderr)
-        
-        # Print metrics if available
-        if hasattr(bridge, 'get_metrics'):
+    if processed_count > 0:
+        if show_progress:
+            print(f"Processed {processed_count} texts in {elapsed_time:.4f}s "
+                  f"({processed_count / elapsed_time:.2f} texts/sec)" if elapsed_time > 0 else
+                  f"Processed {processed_count} texts in {elapsed_time:.4f}s",
+                  file=sys.stderr)
+
+        # Print metrics if requested
+        if bridge.config.collect_metrics and hasattr(bridge, 'get_metrics'):
             metrics = bridge.get_metrics()
             if metrics:
                 print("Performance metrics:", file=sys.stderr)
