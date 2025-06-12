@@ -84,6 +84,19 @@ class BridgeConfig:
         # Create instance
         config = cls(**base_config)
         config.params = params
+
+        # Environment variable overrides
+        env_device = os.getenv("BRIDGENLP_DEVICE")
+        env_batch_size = os.getenv("BRIDGENLP_BATCH_SIZE")
+        if env_device is not None:
+            config.device = env_device
+        if env_batch_size is not None:
+            try:
+                config.batch_size = int(env_batch_size)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid batch size in BRIDGENLP_BATCH_SIZE: {env_batch_size}"
+                )
         
         # Validate device
         if isinstance(config.device, str) and config.device not in ["cpu", "cuda", "-1"]:
